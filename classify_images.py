@@ -23,6 +23,44 @@ def log_message(msg):
     except Exception as e:
         print("Failed to write to classifier.log: {0}".format(e))
 
+def upload_to_0x0(filepath):
+    import urllib.request
+    import uuid
+    
+    if not filepath or not os.path.exists(filepath):
+        return None
+        
+    boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
+    filename = os.path.basename(filepath)
+    
+    try:
+        with open(filepath, 'rb') as f:
+            file_content = f.read()
+            
+        # Construct multipart form body
+        body = (
+            '--{0}\r\n'
+            'Content-Disposition: form-data; name="file"; filename="{1}"\r\n'
+            'Content-Type: video/mp4\r\n\r\n'
+        ).format(boundary, filename).encode('utf-8')
+        
+        body += file_content
+        body += '\r\n--{0}--\r\n'.format(boundary).encode('utf-8')
+        
+        headers = {
+            'Content-Type': 'multipart/form-data; boundary={0}'.format(boundary),
+            'Content-Length': str(len(body))
+        }
+        
+        req = urllib.request.Request('https://0x0.st', data=body, headers=headers, method='POST')
+        with urllib.request.urlopen(req, timeout=20) as res:
+            url = res.read().decode('utf-8').strip()
+            log_message("[Upload] Synced video uploaded to 0x0.st: {0}".format(url))
+            return url
+    except Exception as e:
+        log_message("[Upload] Error uploading video to 0x0.st: {0}".format(e))
+        return None
+
 # --- ML Model Configuration ---
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.pth')
 model = None
@@ -176,6 +214,34 @@ BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
 last_spray_time = 0.0
 
 def send_blast_notification(blast_type, confidence=None):
+    # Wait for the video to be recorded on the Pi (takes max(5s, duration + 2s)).
+    # We wait 8 seconds to be safe and let it finish.
+    time.sleep(8)
+    
+    # Run sync_images.sh to pull the video and process it
+    try:
+        script_path = os.path.join(BASE_DIR, 'sync_images.sh')
+        subprocess.run([script_path], capture_output=True, text=True, check=True)
+        process_synced_videos()
+    except Exception as e:
+        log_message("[Notification] Error syncing during notification: {0}".format(e))
+
+    # Find the latest video in data/videos/ to attach/link
+    video_path = None
+    video_filename = None
+    try:
+        import glob
+        video_files = glob.glob(os.path.join(VIDEOS_DIR, '*.mp4'))
+        if video_files:
+            video_files.sort(key=os.path.getmtime)
+            candidate_path = video_files[-1]
+            # Verify the video file was modified within the last 45 seconds to be sure it's from this spray
+            if time.time() - os.path.getmtime(candidate_path) < 45:
+                video_path = candidate_path
+                video_filename = os.path.basename(video_path)
+    except Exception as e:
+        log_message("[Notification] Error finding latest video: {0}".format(e))
+
     settings = load_settings()
     notification_type = settings.get('notification_type', 'join')
     
@@ -186,6 +252,21 @@ def send_blast_notification(blast_type, confidence=None):
         msg = "Manual spray triggered from the web interface."
         
     log_message(msg)
+    
+    # Construct video URL for Join Push (Try 0x0.st first, fallback to local IP)
+    video_url = None
+    if video_path and video_filename:
+        video_url = upload_to_0x0(video_path)
+        if not video_url:
+            import socket
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('10.255.255.255', 1))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                local_ip = '127.0.0.1'
+            video_url = "http://{0}:5001/video/{1}".format(local_ip, video_filename)
         
     # Send Join Push
     if notification_type in ['join', 'both']:
@@ -200,6 +281,9 @@ def send_blast_notification(blast_type, confidence=None):
                     'text': msg,
                     'deviceId': 'group.all'
                 }
+                if video_url:
+                    params['url'] = video_url
+                    params['file'] = video_url
                 url = "https://joinjoaomgcd.appspot.com/_ah/api/messaging/v1/sendPush?" + urllib.parse.urlencode(params)
                 req = urllib.request.Request(url, method='GET')
                 with urllib.request.urlopen(req, timeout=5) as response:
@@ -214,7 +298,10 @@ def send_blast_notification(blast_type, confidence=None):
         to_email = settings.get('email_to')
         if smtp_server and to_email:
             import smtplib
+            from email.mime.multipart import MIMEMultipart
             from email.mime.text import MIMEText
+            from email.mime.base import MIMEBase
+            from email import encoders
             try:
                 host = '192.169.86.113'
                 port = 25
@@ -225,12 +312,30 @@ def send_blast_notification(blast_type, confidence=None):
                 else:
                     host = smtp_server
                 
-                mime_msg = MIMEText(msg)
+                mime_msg = MIMEMultipart()
                 mime_msg['Subject'] = title
                 mime_msg['From'] = 'squirrel-sentry@localhost'
                 mime_msg['To'] = to_email
                 
-                with smtplib.SMTP(host, port, timeout=5) as server:
+                # Attach text message
+                mime_msg.attach(MIMEText(msg, 'plain'))
+                
+                # Attach video file if available
+                if video_path and os.path.exists(video_path):
+                    try:
+                        with open(video_path, 'rb') as attachment:
+                            part = MIMEBase('application', 'octet-stream')
+                            part.set_payload(attachment.read())
+                            encoders.encode_base64(part)
+                            part.add_header(
+                                'Content-Disposition',
+                                'attachment; filename= {0}'.format(video_filename),
+                            )
+                            mime_msg.attach(part)
+                    except Exception as ve:
+                        log_message("[Notification] Error attaching video: {0}".format(ve))
+                
+                with smtplib.SMTP(host, port, timeout=10) as server:
                     server.send_message(mime_msg)
                 log_message("[Notification] Local SMTP email sent successfully.")
             except Exception as e:
@@ -2475,6 +2580,8 @@ HTML_TEMPLATE = """
                                     ⭐
                                 </button>
                                 <div class="card-actions-overlay">
+                                    <button class="action-icon-btn" onclick="event.stopPropagation(); shareVideo('${vid}')" title="Share Video Link" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 1rem; margin-right: 0.2rem;">🔗</button>
+                                    <a class="action-icon-btn" href="/video/${vid}" download="${vid}" onclick="event.stopPropagation()" title="Download Video" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; font-size: 1rem; margin-right: 0.2rem;">📥</a>
                                     <button class="action-icon-btn btn-delete-quick" onclick="event.stopPropagation(); deleteVideo('${vid}')" title="Delete Video">🗑️</button>
                                 </div>
                                 <img src="/video/${vid.replace('.mp4', '.jpg')}" 
@@ -2695,6 +2802,15 @@ HTML_TEMPLATE = """
                         onclick="toggleFavoriteVideoModal('${filename}', ${!isFav})">
                     ⭐ ${isFav ? 'Favorited' : 'Favorite'}
                 </button>
+                <button class="btn" 
+                        style="padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background-color: transparent; color: var(--text-secondary); cursor: pointer; transition: all 0.15s ease;"
+                        onclick="shareVideo('${filename}')">
+                    🔗 Share
+                </button>
+                <a class="btn" href="/video/${filename}" download="${filename}"
+                        style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center; padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background-color: transparent; color: var(--text-secondary); cursor: pointer; transition: all 0.15s ease;">
+                    📥 Download
+                </a>
                 <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1); margin: 0 0.5rem; align-self: center;"></div>
                 <button class="btn" 
                         style="padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
@@ -2707,6 +2823,28 @@ HTML_TEMPLATE = """
                     False Positive ❌
                 </button>
             `;
+        }
+
+        async function shareVideo(filename) {
+            const videoUrl = window.location.origin + `/video/${filename}`;
+            if (navigator.share) {
+                try {
+                    await navigator.share({
+                        title: 'Squirrel Soaker Spray Video',
+                        text: `Check out this squirrel spray video: ${filename}`,
+                        url: videoUrl
+                    });
+                } catch (e) {
+                    console.error('Error sharing:', e);
+                }
+            } else {
+                try {
+                    await navigator.clipboard.writeText(videoUrl);
+                    alert('Video link copied to clipboard! 🔗');
+                } catch (err) {
+                    alert('Could not copy link: ' + err);
+                }
+            }
         }
 
         async function toggleFavoriteVideo(filename, favorite) {
