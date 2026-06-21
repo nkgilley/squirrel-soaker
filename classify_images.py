@@ -2590,22 +2590,46 @@ HTML_TEMPLATE = """
             loadNext(); // Refresh gallery view
         }
 
+        async function loadPageAndOpenModal(pageChange, targetIndexType) {
+            await loadNext();
+            if (galleryImages.length > 0) {
+                if (targetIndexType === 'first') {
+                    modalIndex = 0;
+                } else if (targetIndexType === 'last') {
+                    modalIndex = galleryImages.length - 1;
+                }
+                updateModalContent();
+            } else {
+                closeImageModal();
+            }
+        }
+
         function updateModalContent() {
             if (modalIndex < 0 || modalIndex >= galleryImages.length) return;
             const img = galleryImages[modalIndex];
             document.getElementById('modal-img-element').src = `/image/${img}`;
             document.getElementById('modal-img-filename').innerText = img;
-            document.getElementById('modal-image-counter').innerText = `Image ${modalIndex + 1} of ${galleryImages.length}`;
+            document.getElementById('modal-image-counter').innerText = `Image ${(currentPage - 1) * 12 + modalIndex + 1} of ${galleryTotalCount}`;
             
-            document.getElementById('modal-prev-btn').disabled = (modalIndex === 0);
-            document.getElementById('modal-next-btn').disabled = (modalIndex === galleryImages.length - 1);
+            document.getElementById('modal-prev-btn').disabled = (currentPage === 1 && modalIndex === 0);
+            document.getElementById('modal-next-btn').disabled = (currentPage === totalPages && modalIndex === galleryImages.length - 1);
         }
 
-        function navigateModal(direction) {
+        async function navigateModal(direction) {
             let target = modalIndex + direction;
             if (target >= 0 && target < galleryImages.length) {
                 modalIndex = target;
                 updateModalContent();
+            } else if (target < 0) {
+                if (currentPage > 1) {
+                    currentPage--;
+                    await loadPageAndOpenModal(-1, 'last');
+                }
+            } else if (target >= galleryImages.length) {
+                if (currentPage < totalPages) {
+                    currentPage++;
+                    await loadPageAndOpenModal(1, 'first');
+                }
             }
         }
 
