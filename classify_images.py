@@ -328,6 +328,59 @@ def clean_directory_by_age(directory, retention_days):
                 print("Error deleting file {0}: {1}".format(fp, e))
     return deleted
 
+def clean_videos_directory(directory, retention_days):
+    if not os.path.exists(directory):
+        return 0
+    import json
+    import datetime
+    
+    # Load blasts log to identify favorited items
+    blasts = []
+    if os.path.exists(BLASTS_LOG_FILE):
+        try:
+            with open(BLASTS_LOG_FILE, 'r') as f:
+                blasts = json.load(f)
+                if not isinstance(blasts, list):
+                    blasts = []
+        except Exception as e:
+            print("Error reading blasts log for cleanup:", e)
+            
+    deleted = 0
+    now = time.time()
+    cutoff = now - (retention_days * 86400)
+    for f in os.listdir(directory):
+        fp = os.path.join(directory, f)
+        if os.path.isfile(fp):
+            base_name = os.path.splitext(f)[0]
+            is_fav = False
+            video_time = get_video_timestamp(base_name + '.mp4')
+            if video_time:
+                for entry in blasts:
+                    if not entry.get('favorite'):
+                        continue
+                    entry_time_str = entry.get('timestamp')
+                    if not entry_time_str:
+                        continue
+                    try:
+                        entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                        if abs((video_time - entry_time).total_seconds()) < 6.0:
+                            is_fav = True
+                            break
+                    except Exception:
+                        continue
+            
+            if is_fav:
+                continue
+                
+            try:
+                mtime = os.path.getmtime(fp)
+                if mtime < cutoff:
+                    os.remove(fp)
+                    deleted += 1
+            except Exception as e:
+                print("Error deleting file {0}: {1}".format(fp, e))
+    return deleted
+
 def clean_not_squirrel_directory(not_squirrel_dir, retention_days, min_count):
     if not os.path.exists(not_squirrel_dir):
         return 0
@@ -376,7 +429,7 @@ def run_storage_cleanup():
             
             del_raw = clean_directory_by_age(RAW_DIR, raw_days)
             del_trash = clean_directory_by_age(TRASH_DIR, trash_days)
-            del_vid = clean_directory_by_age(VIDEOS_DIR, vid_days)
+            del_vid = clean_videos_directory(VIDEOS_DIR, vid_days)
             del_ns = clean_not_squirrel_directory(NOT_SQUIRREL_DIR, ns_days, ns_min)
             
             if del_raw > 0 or del_trash > 0 or del_vid > 0 or del_ns > 0:
@@ -437,7 +490,7 @@ def get_next_raw_image():
     return None
 
 def process_synced_videos():
-    """Finds all .h264 files in RAW_DIR, converts them to .mp4 in VIDEOS_DIR, and deletes the source .h264 files."""
+    """Finds all .h264 files in RAW_DIR, converts them to .mp4 in VIDEOS_DIR, generates thumbnails, and deletes source files."""
     if not os.path.exists(VIDEOS_DIR):
         os.makedirs(VIDEOS_DIR, exist_ok=True)
         
@@ -458,8 +511,29 @@ def process_synced_videos():
                 subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 os.remove(h264_path)
                 print("Successfully converted {0} to {1}".format(filename, mp4_filename))
-            except subprocess.CalledProcessError as e:
-                print("Error converting {0}: {1}".format(filename, e.stderr.decode('utf-8', errors='ignore')))
+                
+                # Generate thumbnail
+                thumb_filename = os.path.splitext(mp4_filename)[0] + '.jpg'
+                thumb_path = os.path.join(VIDEOS_DIR, thumb_filename)
+                thumb_cmd = [ffmpeg_path, '-y', '-i', mp4_path, '-ss', '00:00:00.5', '-vframes', '1', thumb_path]
+                subprocess.run(thumb_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                print("Generated thumbnail for {0}".format(mp4_filename))
+            except Exception as e:
+                print("Error processing video {0}: {1}".format(filename, str(e)))
+                
+    # Generate missing thumbnails for existing mp4 files
+    for filename in os.listdir(VIDEOS_DIR):
+        if filename.lower().endswith('.mp4'):
+            mp4_path = os.path.join(VIDEOS_DIR, filename)
+            thumb_filename = os.path.splitext(filename)[0] + '.jpg'
+            thumb_path = os.path.join(VIDEOS_DIR, thumb_filename)
+            if not os.path.exists(thumb_path):
+                thumb_cmd = [ffmpeg_path, '-y', '-i', mp4_path, '-ss', '00:00:00.5', '-vframes', '1', thumb_path]
+                try:
+                    subprocess.run(thumb_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    print("Generated missing thumbnail for {0}".format(filename))
+                except Exception as e:
+                    print("Error generating missing thumbnail for {0}: {1}".format(filename, e))
 
 def get_video_timestamp(filename):
     """Parses vid_YYYYMMDD_HHMMSS.mp4 to a datetime object."""
@@ -1349,6 +1423,7 @@ HTML_TEMPLATE = """
         let galleryTotalCount = 0;
         let modalIndex = 0; // Index of the currently open image in the galleryImages array
         let videoClassifications = {};
+        let videoFavorites = {};
 
         function toggleReverse(checked) {
             reverseOrder = checked;
@@ -2285,6 +2360,7 @@ HTML_TEMPLATE = """
                 const workspace = document.getElementById('workspace-card');
                 const videos = data.videos;
                 videoClassifications = data.classifications || {};
+                videoFavorites = data.favorites || {};
                 
                 if (videos && videos.length > 0) {
                     let cardsHtml = '';
@@ -2292,13 +2368,24 @@ HTML_TEMPLATE = """
                         const currentClassification = videoClassifications[vid] || null;
                         const isAccurate = currentClassification === 'accurate';
                         const isFalsePositive = currentClassification === 'false_positive';
+                        const isFav = videoFavorites[vid] || false;
                         
                         cardsHtml += `
                             <div class="gallery-card" onclick="openVideoModal('${vid}')">
+                                <button class="action-icon-btn" 
+                                        style="position: absolute; top: 8px; left: 8px; background: ${isFav ? 'rgba(245, 158, 11, 0.25)' : 'rgba(15, 23, 42, 0.6)'}; border: 1px solid ${isFav ? '#f59e0b' : 'var(--border-color)'}; color: ${isFav ? '#f59e0b' : 'var(--text-secondary)'}; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 6; font-size: 1rem; transition: all 0.15s ease;"
+                                        onclick="event.stopPropagation(); toggleFavoriteVideo('${vid}', ${!isFav})" 
+                                        title="${isFav ? 'Unfavorite Video' : 'Favorite Video'}">
+                                    ⭐
+                                </button>
                                 <div class="card-actions-overlay">
                                     <button class="action-icon-btn btn-delete-quick" onclick="event.stopPropagation(); deleteVideo('${vid}')" title="Delete Video">🗑️</button>
                                 </div>
-                                <div style="height: 150px; background: #020617; display: flex; align-items: center; justify-content: center; font-size: 3rem; border-bottom: 1px solid var(--border-color);">
+                                <img src="/video/${vid.replace('.mp4', '.jpg')}" 
+                                     alt="Video thumbnail" 
+                                     style="width: 100%; height: 150px; object-fit: cover; border-bottom: 1px solid var(--border-color);"
+                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                <div style="display: none; height: 150px; background: #020617; align-items: center; justify-content: center; font-size: 3rem; border-bottom: 1px solid var(--border-color);">
                                     📹
                                 </div>
                                 <div class="gallery-card-info" style="border-bottom: none;">${vid}</div>
@@ -2480,8 +2567,15 @@ HTML_TEMPLATE = """
             const currentClassification = videoClassifications[filename] || null;
             const isAccurate = currentClassification === 'accurate';
             const isFalsePositive = currentClassification === 'false_positive';
+            const isFav = videoFavorites[filename] || false;
             
             container.innerHTML = `
+                <button class="btn" 
+                        style="padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid ${isFav ? '#f59e0b' : 'rgba(255,255,255,0.1)'}; background-color: ${isFav ? 'rgba(245, 158, 11, 0.2)' : 'transparent'}; color: ${isFav ? '#f59e0b' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                        onclick="toggleFavoriteVideoModal('${filename}', ${!isFav})">
+                    ⭐ ${isFav ? 'Favorited' : 'Favorite'}
+                </button>
+                <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.1); margin: 0 0.5rem; align-self: center;"></div>
                 <button class="btn" 
                         style="padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
                         onclick="classifyVideoModal('${filename}', '${isAccurate ? '' : 'accurate'}')">
@@ -2493,6 +2587,32 @@ HTML_TEMPLATE = """
                     False Positive ❌
                 </button>
             `;
+        }
+
+        async function toggleFavoriteVideo(filename, favorite) {
+            try {
+                const res = await fetch('/api/favorite_video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ video_name: filename, favorite: favorite })
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    videoFavorites[filename] = favorite;
+                    if (viewMode === 'videos') {
+                        loadNext();
+                    }
+                } else {
+                    alert("Error: " + data.message);
+                }
+            } catch (e) {
+                console.error("Error favoriting video:", e);
+            }
+        }
+
+        async function toggleFavoriteVideoModal(filename, favorite) {
+            await toggleFavoriteVideo(filename, favorite);
+            updateModalVideoClassifications(filename);
         }
 
         async function classifyVideo(filename, classification) {
@@ -2794,6 +2914,7 @@ def list_videos():
         files = []
         
     classifications = {}
+    favorites = {}
     blasts = []
     if os.path.exists(BLASTS_LOG_FILE):
         try:
@@ -2817,6 +2938,8 @@ def list_videos():
                 if abs((video_time - entry_time).total_seconds()) < 6.0:
                     if 'classification' in entry:
                         classifications[f] = entry['classification']
+                    if 'favorite' in entry:
+                        favorites[f] = entry['favorite']
                     break
             except Exception:
                 continue
@@ -2824,6 +2947,7 @@ def list_videos():
     return jsonify({
         'videos': files,
         'classifications': classifications,
+        'favorites': favorites,
         'stats': get_stats(),
         'has_history': len(classification_history) > 0
     })
@@ -2918,6 +3042,77 @@ def classify_video():
         'has_history': len(classification_history) > 0
     })
 
+@app.route('/api/favorite_video', methods=['POST'])
+def favorite_video():
+    import json
+    import datetime
+    data = request.get_json() or {}
+    video_name = data.get('video_name')
+    favorite = data.get('favorite', False) # True or False
+    
+    if not video_name:
+        return jsonify({'status': 'error', 'message': 'Missing video_name'}), 400
+        
+    video_time = get_video_timestamp(video_name)
+    if not video_time:
+        return jsonify({'status': 'error', 'message': 'Invalid video filename format'}), 400
+        
+    # Read blasts log
+    blasts = []
+    if os.path.exists(BLASTS_LOG_FILE):
+        try:
+            with open(BLASTS_LOG_FILE, 'r') as f:
+                blasts = json.load(f)
+                if not isinstance(blasts, list):
+                    blasts = []
+        except Exception as e:
+            print("Error reading blasts log:", e)
+            
+    # Find closest entry
+    closest_entry = None
+    min_diff = 6.0 # 5 second threshold
+    
+    for entry in blasts:
+        entry_time_str = entry.get('timestamp')
+        if not entry_time_str:
+            continue
+        try:
+            entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+            diff = abs((video_time - entry_time).total_seconds())
+            if diff < min_diff:
+                min_diff = diff
+                closest_entry = entry
+        except Exception:
+            continue
+            
+    if closest_entry:
+        if favorite:
+            closest_entry['favorite'] = True
+        else:
+            closest_entry.pop('favorite', None)
+    else:
+        # Fallback: create a new entry if favorited
+        if favorite:
+            new_entry = {
+                'timestamp': video_time.strftime("%Y-%m-%d %H:%M:%S"),
+                'type': 'auto',
+                'favorite': True
+            }
+            blasts.append(new_entry)
+            
+    # Save blasts log
+    try:
+        with open(BLASTS_LOG_FILE, 'w') as f:
+            json.dump(blasts, f, indent=2)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': 'Error writing to blasts log: {0}'.format(e)}), 500
+        
+    return jsonify({
+        'status': 'success',
+        'stats': get_stats(),
+        'has_history': len(classification_history) > 0
+    })
+
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
@@ -2978,7 +3173,7 @@ def api_settings():
                     print("[Storage Cleanup] Running settings-change cleanup...")
                     del_raw = clean_directory_by_age(RAW_DIR, raw_days)
                     del_trash = clean_directory_by_age(TRASH_DIR, trash_days)
-                    del_vid = clean_directory_by_age(VIDEOS_DIR, vid_days)
+                    del_vid = clean_videos_directory(VIDEOS_DIR, vid_days)
                     del_ns = clean_not_squirrel_directory(NOT_SQUIRREL_DIR, ns_days, ns_min)
                     
                     if del_raw > 0 or del_trash > 0 or del_vid > 0 or del_ns > 0:
