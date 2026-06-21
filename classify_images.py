@@ -136,10 +136,7 @@ def model_predict(filepath):
 # Initial model load attempt
 load_trained_model()
 
-# --- Configuration ---
-PI_IP = '192.168.86.136'
-
-# --- Directory Paths ---
+# --- Directory Paths & Env Loading ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_env_file():
@@ -156,6 +153,9 @@ def load_env_file():
             print("Error loading env file:", e)
 
 load_env_file()
+
+# --- Configuration ---
+PI_IP = os.environ.get('PI_IP', '192.168.86.136')
 
 RAW_DIR = os.path.join(BASE_DIR, 'data', 'raw')
 DATASET_DIR = os.path.join(BASE_DIR, 'data', 'dataset')
@@ -1550,6 +1550,12 @@ HTML_TEMPLATE = """
         let modalIndex = 0; // Index of the currently open image in the galleryImages array
         let videoClassifications = {};
         let videoFavorites = {};
+        let showFavoritesOnly = false;
+
+        function toggleFavoritesFilter() {
+            showFavoritesOnly = !showFavoritesOnly;
+            loadNext();
+        }
 
         function toggleReverse(checked) {
             reverseOrder = checked;
@@ -1576,6 +1582,9 @@ HTML_TEMPLATE = """
         function setViewMode(mode) {
             viewMode = mode;
             currentPage = 1; // Reset page
+            if (mode !== 'videos') {
+                showFavoritesOnly = false;
+            }
             
             // If navigating away from train and training is not active, clear polling
             if (mode !== 'train' && !isTrainingRunning && trainPollingInterval) {
@@ -2564,59 +2573,88 @@ HTML_TEMPLATE = """
                 videoFavorites = data.favorites || {};
                 
                 if (videos && videos.length > 0) {
-                    let cardsHtml = '';
-                    videos.forEach((vid) => {
-                        const currentClassification = videoClassifications[vid] || null;
-                        const isAccurate = currentClassification === 'accurate';
-                        const isFalsePositive = currentClassification === 'false_positive';
-                        const isFav = videoFavorites[vid] || false;
+                    let filteredVideos = videos;
+                    if (showFavoritesOnly) {
+                        filteredVideos = videos.filter(vid => videoFavorites[vid] === true);
+                    }
+
+                    if (filteredVideos.length > 0) {
+                        let cardsHtml = '';
+                        filteredVideos.forEach((vid) => {
+                            const currentClassification = videoClassifications[vid] || null;
+                            const isAccurate = currentClassification === 'accurate';
+                            const isFalsePositive = currentClassification === 'false_positive';
+                            const isFav = videoFavorites[vid] || false;
+                            
+                            cardsHtml += `
+                                <div class="gallery-card" onclick="openVideoModal('${vid}')">
+                                    <button class="action-icon-btn" 
+                                            style="position: absolute; top: 8px; left: 8px; background: ${isFav ? 'rgba(245, 158, 11, 0.25)' : 'rgba(15, 23, 42, 0.6)'}; border: 1px solid ${isFav ? '#f59e0b' : 'var(--border-color)'}; color: ${isFav ? '#f59e0b' : 'var(--text-secondary)'}; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 6; font-size: 1rem; transition: all 0.15s ease;"
+                                            onclick="event.stopPropagation(); toggleFavoriteVideo('${vid}', ${!isFav})" 
+                                            title="${isFav ? 'Unfavorite Video' : 'Favorite Video'}">
+                                        ⭐
+                                    </button>
+                                    <div class="card-actions-overlay">
+                                        <button class="action-icon-btn" onclick="event.stopPropagation(); shareVideo('${vid}')" title="Share Video Link" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 1rem; margin-right: 0.2rem;">🔗</button>
+                                        <a class="action-icon-btn" href="/video/${vid}" download="${vid}" onclick="event.stopPropagation()" title="Download Video" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; font-size: 1rem; margin-right: 0.2rem;">📥</a>
+                                        <button class="action-icon-btn btn-delete-quick" onclick="event.stopPropagation(); deleteVideo('${vid}')" title="Delete Video">🗑️</button>
+                                    </div>
+                                    <img src="/video/${vid.replace('.mp4', '.jpg')}" 
+                                         alt="Video thumbnail" 
+                                         style="width: 100%; height: 150px; object-fit: cover; border-bottom: 1px solid var(--border-color);"
+                                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                    <div style="display: none; height: 150px; background: #020617; align-items: center; justify-content: center; font-size: 3rem; border-bottom: 1px solid var(--border-color);">
+                                        📹
+                                    </div>
+                                    <div class="gallery-card-info" style="border-bottom: none;">${vid}</div>
+                                    <div style="display: flex; gap: 0.5rem; padding: 0.5rem 0.75rem 0.75rem 0.75rem; background: rgba(0, 0, 0, 0.2); border-top: 1px solid rgba(255,255,255,0.05);" onclick="event.stopPropagation()">
+                                        <button class="btn btn-classify-video accurate-btn ${isAccurate ? 'active' : ''}" 
+                                                style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                                                onclick="classifyVideo('${vid}', '${isAccurate ? '' : 'accurate'}')">
+                                            Accurate 🐿️
+                                        </button>
+                                        <button class="btn btn-classify-video false-positive-btn ${isFalsePositive ? 'active' : ''}" 
+                                                style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isFalsePositive ? 'var(--color-not-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isFalsePositive ? 'rgba(239, 68, 68, 0.2)' : 'transparent'}; color: ${isFalsePositive ? 'var(--color-not-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                                                onclick="classifyVideo('${vid}', '${isFalsePositive ? '' : 'false_positive'}')">
+                                            False Pos ❌
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                        });
                         
-                        cardsHtml += `
-                            <div class="gallery-card" onclick="openVideoModal('${vid}')">
-                                <button class="action-icon-btn" 
-                                        style="position: absolute; top: 8px; left: 8px; background: ${isFav ? 'rgba(245, 158, 11, 0.25)' : 'rgba(15, 23, 42, 0.6)'}; border: 1px solid ${isFav ? '#f59e0b' : 'var(--border-color)'}; color: ${isFav ? '#f59e0b' : 'var(--text-secondary)'}; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 6; font-size: 1rem; transition: all 0.15s ease;"
-                                        onclick="event.stopPropagation(); toggleFavoriteVideo('${vid}', ${!isFav})" 
-                                        title="${isFav ? 'Unfavorite Video' : 'Favorite Video'}">
-                                    ⭐
-                                </button>
-                                <div class="card-actions-overlay">
-                                    <button class="action-icon-btn" onclick="event.stopPropagation(); shareVideo('${vid}')" title="Share Video Link" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 1rem; margin-right: 0.2rem;">🔗</button>
-                                    <a class="action-icon-btn" href="/video/${vid}" download="${vid}" onclick="event.stopPropagation()" title="Download Video" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; font-size: 1rem; margin-right: 0.2rem;">📥</a>
-                                    <button class="action-icon-btn btn-delete-quick" onclick="event.stopPropagation(); deleteVideo('${vid}')" title="Delete Video">🗑️</button>
-                                </div>
-                                <img src="/video/${vid.replace('.mp4', '.jpg')}" 
-                                     alt="Video thumbnail" 
-                                     style="width: 100%; height: 150px; object-fit: cover; border-bottom: 1px solid var(--border-color);"
-                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                                <div style="display: none; height: 150px; background: #020617; align-items: center; justify-content: center; font-size: 3rem; border-bottom: 1px solid var(--border-color);">
-                                    📹
-                                </div>
-                                <div class="gallery-card-info" style="border-bottom: none;">${vid}</div>
-                                <div style="display: flex; gap: 0.5rem; padding: 0.5rem 0.75rem 0.75rem 0.75rem; background: rgba(0, 0, 0, 0.2); border-top: 1px solid rgba(255,255,255,0.05);" onclick="event.stopPropagation()">
-                                    <button class="btn btn-classify-video accurate-btn ${isAccurate ? 'active' : ''}" 
-                                            style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
-                                            onclick="classifyVideo('${vid}', '${isAccurate ? '' : 'accurate'}')">
-                                        Accurate 🐿️
-                                    </button>
-                                    <button class="btn btn-classify-video false-positive-btn ${isFalsePositive ? 'active' : ''}" 
-                                            style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isFalsePositive ? 'var(--color-not-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isFalsePositive ? 'rgba(239, 68, 68, 0.2)' : 'transparent'}; color: ${isFalsePositive ? 'var(--color-not-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
-                                            onclick="classifyVideo('${vid}', '${isFalsePositive ? '' : 'false_positive'}')">
-                                        False Pos ❌
+                        workspace.innerHTML = `
+                            <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1rem;">
+                                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                    <h2 style="font-weight: 600; font-size: 1.25rem; margin: 0;">Spray Videos</h2>
+                                    <button id="favorites-filter-btn" class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: ${showFavoritesOnly ? '#f59e0b' : 'transparent'}; border: 1px solid ${showFavoritesOnly ? '#f59e0b' : 'var(--border-color)'}; color: ${showFavoritesOnly ? '#020617' : 'var(--text-secondary)'}; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onclick="toggleFavoritesFilter()">
+                                        ⭐ ${showFavoritesOnly ? 'Favorites Only' : 'All Videos'}
                                     </button>
                                 </div>
+                                <span style="font-size: 0.9rem; color: var(--text-secondary);">${filteredVideos.length} videos displayed</span>
+                            </div>
+                            <div class="grid-gallery">
+                                ${cardsHtml}
                             </div>
                         `;
-                    });
-                    
-                    workspace.innerHTML = `
-                        <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1rem;">
-                            <h2 style="font-weight: 600; font-size: 1.25rem;">Spray Videos</h2>
-                            <span style="font-size: 0.9rem; color: var(--text-secondary);">${videos.length} videos recorded</span>
-                        </div>
-                        <div class="grid-gallery">
-                            ${cardsHtml}
-                        </div>
-                    `;
+                    } else {
+                        workspace.innerHTML = `
+                            <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1rem;">
+                                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                    <h2 style="font-weight: 600; font-size: 1.25rem; margin: 0;">Spray Videos</h2>
+                                    <button id="favorites-filter-btn" class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: ${showFavoritesOnly ? '#f59e0b' : 'transparent'}; border: 1px solid ${showFavoritesOnly ? '#f59e0b' : 'var(--border-color)'}; color: ${showFavoritesOnly ? '#020617' : 'var(--text-secondary)'}; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onclick="toggleFavoritesFilter()">
+                                        ⭐ ${showFavoritesOnly ? 'Favorites Only' : 'All Videos'}
+                                    </button>
+                                </div>
+                                <span style="font-size: 0.9rem; color: var(--text-secondary);">0 videos displayed</span>
+                            </div>
+                            <div class="no-images">
+                                <div class="no-images-icon" style="color: #f59e0b;">⭐</div>
+                                <h2>No favorite videos found</h2>
+                                <p>Click the star icon on any video card to add it to your favorites!</p>
+                            </div>
+                        `;
+                    }
                 } else {
                     workspace.innerHTML = `
                         <div class="no-images">
