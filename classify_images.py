@@ -3,8 +3,25 @@ import time
 import shutil
 import subprocess
 from flask import Flask, jsonify, request, send_from_directory, render_template_string
+import threading
 
 app = Flask(__name__)
+
+# --- Classifier Logging ---
+log_lock = threading.Lock()
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'classifier.log')
+
+def log_message(msg):
+    # Print to stdout/stderr so normal console logging works
+    print(msg)
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    formatted_msg = "[{0}] {1}\n".format(timestamp, msg)
+    try:
+        with log_lock:
+            with open(LOG_FILE, 'a') as f:
+                f.write(formatted_msg)
+    except Exception as e:
+        print("Failed to write to classifier.log: {0}".format(e))
 
 # --- ML Model Configuration ---
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.pth')
@@ -40,9 +57,9 @@ def load_trained_model():
             model.load_state_dict(checkpoint['model_state_dict'])
             model = model.to(device)
             model.eval()
-            print("Successfully loaded trained model with classes: {0}".format(model_classes))
+            log_message("Successfully loaded trained model with classes: {0}".format(model_classes))
         except Exception as e:
-            print("Error loading model: {0}".format(e))
+            log_message("Error loading model: {0}".format(e))
             model = None
 
 def model_predict(filepath):
@@ -75,7 +92,7 @@ def model_predict(filepath):
             is_squirrel = (class_name == 'squirrel')
             return is_squirrel, confidence.item()
     except Exception as e:
-        print("Error during prediction: {0}".format(e))
+        log_message("Error during prediction: {0}".format(e))
         return False, 0.0
 
 # Initial model load attempt
@@ -168,6 +185,8 @@ def send_blast_notification(blast_type, confidence=None):
     else:
         msg = "Manual spray triggered from the web interface."
         
+    log_message(msg)
+        
     # Send Join Push
     if notification_type in ['join', 'both']:
         api_key = settings.get('join_api_key')
@@ -185,9 +204,9 @@ def send_blast_notification(blast_type, confidence=None):
                 req = urllib.request.Request(url, method='GET')
                 with urllib.request.urlopen(req, timeout=5) as response:
                     response.read()
-                print("[Notification] Join push sent successfully.")
+                log_message("[Notification] Join push sent successfully.")
             except Exception as e:
-                print("[Notification] Error sending Join push:", e)
+                log_message("[Notification] Error sending Join push: {0}".format(e))
 
     # Send Email
     if notification_type in ['email', 'both']:
@@ -213,9 +232,9 @@ def send_blast_notification(blast_type, confidence=None):
                 
                 with smtplib.SMTP(host, port, timeout=5) as server:
                     server.send_message(mime_msg)
-                print("[Notification] Local SMTP email sent successfully.")
+                log_message("[Notification] Local SMTP email sent successfully.")
             except Exception as e:
-                print("[Notification] Error sending SMTP email:", e)
+                log_message("[Notification] Error sending SMTP email: {0}".format(e))
 
 def log_blast(blast_type, confidence=None):
     import json
@@ -425,7 +444,7 @@ def run_storage_cleanup():
             trash_days = settings.get('retention_days_trash', 1.0)
             vid_days = settings.get('retention_days_videos', 14.0)
             
-            print("[Storage Cleanup] Running automated cleanup...")
+            log_message("[Storage Cleanup] Running automated cleanup...")
             
             del_raw = clean_directory_by_age(RAW_DIR, raw_days)
             del_trash = clean_directory_by_age(TRASH_DIR, trash_days)
@@ -433,14 +452,14 @@ def run_storage_cleanup():
             del_ns = clean_not_squirrel_directory(NOT_SQUIRREL_DIR, ns_days, ns_min)
             
             if del_raw > 0 or del_trash > 0 or del_vid > 0 or del_ns > 0:
-                print("[Storage Cleanup] Done. Deleted: raw={0}, trash={1}, videos={2}, not_squirrel={3}".format(
+                log_message("[Storage Cleanup] Done. Deleted: raw={0}, trash={1}, videos={2}, not_squirrel={3}".format(
                     del_raw, del_trash, del_vid, del_ns
                 ))
             else:
-                print("[Storage Cleanup] Done. No files needed pruning.")
+                log_message("[Storage Cleanup] Done. No files needed pruning.")
                 
         except Exception as e:
-            print("Error in storage cleanup loop:", e)
+            log_message("Error in storage cleanup loop: {0}".format(e))
             
         time.sleep(3600)
 
@@ -1309,6 +1328,7 @@ HTML_TEMPLATE = """
                         <button id="mode-videos" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('videos')">Spray Videos 📹</button>
                         <button id="mode-train" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('train')">Train Model 🧠</button>
                         <button id="mode-settings" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('settings')">Settings ⚙️</button>
+                        <button id="mode-logs" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('logs')">Classifier Logs 📋</button>
                     </div>
                     <label style="display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; cursor: pointer; color: var(--text-secondary); margin-top: 0.2rem; border-top: 1px solid var(--border-color); padding-top: 0.6rem;">
                         <input type="checkbox" id="reverse-toggle" onchange="toggleReverse(this.checked)" style="width: 16px; height: 16px; accent-color: var(--color-sync); cursor: pointer;">
@@ -1457,8 +1477,13 @@ HTML_TEMPLATE = """
                 clearInterval(trainPollingInterval);
                 trainPollingInterval = null;
             }
+            // If navigating away from logs, clear polling
+            if (mode !== 'logs' && logsPollingInterval) {
+                clearInterval(logsPollingInterval);
+                logsPollingInterval = null;
+            }
             
-            const modes = ['dashboard', 'queue', 'squirrel', 'not_squirrel', 'videos', 'train', 'settings'];
+            const modes = ['dashboard', 'queue', 'squirrel', 'not_squirrel', 'videos', 'train', 'settings', 'logs'];
             modes.forEach(m => {
                 const btn = document.getElementById(`mode-${m}`);
                 if (btn) {
@@ -2017,6 +2042,7 @@ HTML_TEMPLATE = """
         }
 
         let trainPollingInterval = null;
+        let logsPollingInterval = null;
         let isTrainingRunning = false;
 
         function renderTrainView() {
@@ -2178,7 +2204,76 @@ HTML_TEMPLATE = """
             }
         }
 
+        function renderLogsView() {
+            const workspace = document.getElementById('workspace-card');
+            workspace.innerHTML = `
+                <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+                    <h2 style="font-weight: 600; font-size: 1.25rem;">Classifier Logs 📋</h2>
+                    <div style="display: flex; gap: 0.75rem;">
+                        <button id="clear-logs-btn" class="btn" style="background-color: var(--color-delete); color: white;" onclick="clearClassifierLogs()">
+                            Clear Logs 🗑️
+                        </button>
+                        <button id="refresh-logs-btn" class="btn" style="background-color: var(--color-sync); color: white;" onclick="fetchClassifierLogs()">
+                            Refresh 🔄
+                        </button>
+                    </div>
+                </div>
+                
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; flex-grow: 1; height: 500px; min-height: 350px;">
+                    <pre id="classifier-logs" style="flex-grow: 1; overflow-y: auto; background-color: #020617; border: 1px solid var(--border-color); padding: 1rem; border-radius: 12px; font-family: monospace; font-size: 0.85rem; color: #a7f3d0; white-space: pre-wrap; line-height: 1.4;"></pre>
+                </div>
+            `;
+            
+            // Fetch logs immediately
+            fetchClassifierLogs();
+            
+            // Start polling if not already polling
+            if (!logsPollingInterval) {
+                logsPollingInterval = setInterval(fetchClassifierLogs, 3000);
+            }
+        }
+
+        async function fetchClassifierLogs() {
+            const logsPre = document.getElementById('classifier-logs');
+            if (!logsPre) return;
+            try {
+                const res = await fetch('/api/logs');
+                const data = await res.json();
+                
+                // Detect if user was scrolled to bottom
+                const wasScrolledToBottom = logsPre.scrollHeight - logsPre.clientHeight <= logsPre.scrollTop + 20;
+                
+                logsPre.innerText = data.logs || 'No classifier log output yet.';
+                
+                if (wasScrolledToBottom) {
+                    logsPre.scrollTop = logsPre.scrollHeight;
+                }
+            } catch (e) {
+                console.error("Error fetching classifier logs:", e);
+            }
+        }
+
+        async function clearClassifierLogs() {
+            if (!confirm("Are you sure you want to clear the classifier logs?")) return;
+            try {
+                const res = await fetch('/api/logs/clear', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    fetchClassifierLogs();
+                } else {
+                    alert("Failed to clear logs: " + data.error);
+                }
+            } catch (e) {
+                console.error("Error clearing logs:", e);
+                alert("Error clearing logs: " + e);
+            }
+        }
+
         async function loadNext(current = '', index = null, showCurrent = false) {
+            if (viewMode === 'logs') {
+                renderLogsView();
+                return;
+            }
             if (viewMode === 'dashboard') {
                 renderDashboardView();
                 return;
@@ -3176,20 +3271,20 @@ def api_settings():
                     trash_days = settings.get('retention_days_trash', 1.0)
                     vid_days = settings.get('retention_days_videos', 14.0)
                     
-                    print("[Storage Cleanup] Running settings-change cleanup...")
+                    log_message("[Storage Cleanup] Running settings-change cleanup...")
                     del_raw = clean_directory_by_age(RAW_DIR, raw_days)
                     del_trash = clean_directory_by_age(TRASH_DIR, trash_days)
                     del_vid = clean_videos_directory(VIDEOS_DIR, vid_days)
                     del_ns = clean_not_squirrel_directory(NOT_SQUIRREL_DIR, ns_days, ns_min)
                     
                     if del_raw > 0 or del_trash > 0 or del_vid > 0 or del_ns > 0:
-                        print("[Storage Cleanup] Done. Deleted: raw={0}, trash={1}, videos={2}, not_squirrel={3}".format(
+                        log_message("[Storage Cleanup] Done. Deleted: raw={0}, trash={1}, videos={2}, not_squirrel={3}".format(
                             del_raw, del_trash, del_vid, del_ns
                         ))
                     else:
-                        print("[Storage Cleanup] Done. No files needed pruning.")
+                        log_message("[Storage Cleanup] Done. No files needed pruning.")
                 except Exception as e:
-                    print("Error in settings-change cleanup thread:", e)
+                    log_message("Error in settings-change cleanup thread: {0}".format(e))
                     
             threading.Thread(target=run_once).start()
             
@@ -3412,7 +3507,7 @@ def toggle_automation():
     global automation_enabled
     automation_enabled = not automation_enabled
     save_automation_status(automation_enabled)
-    print("[Automation] Automation toggled to: {0}".format(automation_enabled))
+    log_message("[Automation] Automation toggled to: {0}".format(automation_enabled))
     return jsonify({'enabled': automation_enabled})
 
 @app.route('/api/train/start', methods=['POST'])
@@ -3428,7 +3523,7 @@ def start_training():
         with open(log_path, 'w') as f:
             f.write("Initializing local retraining...\n")
     except Exception as e:
-        print("Error clearing train.log:", e)
+        log_message("Error clearing train.log: {0}".format(e))
         
     # Start train.py as a subprocess using the same python interpreter
     import sys
@@ -3441,7 +3536,7 @@ def start_training():
             stdout=open(log_path, 'w'),
             stderr=subprocess.STDOUT
         )
-        print("[Training] Started background training subprocess (PID: {0})".format(training_process.pid))
+        log_message("[Training] Started background training subprocess (PID: {0})".format(training_process.pid))
         return jsonify({'status': 'success', 'message': 'Training started.'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -3465,10 +3560,10 @@ def train_status():
             if last_exit_code == 0 and not model_reloaded:
                 try:
                     load_trained_model()
-                    print("[Training] Hot-reloaded newly trained model successfully.")
+                    log_message("[Training] Hot-reloaded newly trained model successfully.")
                     model_reloaded = True
                 except Exception as e:
-                    print("Error hot-reloading weights:", e)
+                    log_message("Error hot-reloading weights: {0}".format(e))
                     
     # Read the log file
     log_path = os.path.join(BASE_DIR, 'data', 'train.log')
@@ -3485,6 +3580,34 @@ def train_status():
         'exit_code': last_exit_code,
         'logs': logs
     })
+
+@app.route('/api/logs')
+def get_classifier_logs():
+    # Return last 200 lines of classifier log file
+    log_path = os.path.join(BASE_DIR, 'data', 'classifier.log')
+    logs = ""
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r') as f:
+                lines = f.readlines()
+                logs = "".join(lines[-200:])
+        except Exception as e:
+            logs = "Error reading log: {0}".format(str(e))
+    else:
+        logs = "No log output yet."
+    return jsonify({'logs': logs})
+
+@app.route('/api/logs/clear', methods=['POST'])
+def clear_classifier_logs():
+    log_path = os.path.join(BASE_DIR, 'data', 'classifier.log')
+    try:
+        with log_lock:
+            with open(log_path, 'w') as f:
+                f.write("")
+        log_message("Classifier log cleared manually.")
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
@@ -3510,11 +3633,11 @@ def predict():
         target_dir = SQUIRREL_DIR if is_squirrel else NOT_SQUIRREL_DIR
         try:
             shutil.move(filepath, os.path.join(target_dir, filename))
-            print("[Auto-Classify] Automatically classified {0} as {1} (confidence: {2:.2f})".format(
+            log_message("[Auto-Classify] Automatically classified {0} as {1} (confidence: {2:.2f})".format(
                 filename, 'squirrel' if is_squirrel else 'not_squirrel', confidence
             ))
         except Exception as e:
-            print("Error auto-classifying {0}: {1}".format(filename, str(e)))
+            log_message("Error auto-classifying {0}: {1}".format(filename, str(e)))
             
     # Check spray cooldown
     current_time = time.time()
@@ -3534,9 +3657,9 @@ def predict():
         if not is_test:
             log_blast('auto', confidence)
             last_spray_time = current_time
-            print("[Cooldown] Solenoid triggered. Cooldown activated for {0}s.".format(cooldown))
+            log_message("[Cooldown] Solenoid triggered. Cooldown activated for {0}s.".format(cooldown))
     elif is_squirrel and cooldown_active and automation_enabled:
-        print("[Cooldown] Squirrel detected, but skipping spray because cooldown is active ({0:.1f}s remaining).".format(
+        log_message("[Cooldown] Squirrel detected, but skipping spray because cooldown is active ({0:.1f}s remaining).".format(
             cooldown - (current_time - last_spray_time)
         ))
         
@@ -3554,6 +3677,6 @@ if __name__ == '__main__':
     cleanup_thread.daemon = True
     cleanup_thread.start()
     
-    print("Starting Squirrel Soaker 9001 Classifier App...")
-    print("Serving locally at http://localhost:5001")
+    log_message("Starting Squirrel Soaker 9001 Classifier App...")
+    log_message("Serving locally at http://localhost:5001")
     app.run(host='0.0.0.0', port=5001, debug=True)
