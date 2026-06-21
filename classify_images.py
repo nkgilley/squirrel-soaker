@@ -1331,7 +1331,7 @@ HTML_TEMPLATE = """
                         <button id="mode-logs" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('logs')">Classifier Logs 📋</button>
                     </div>
                     <label style="display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; cursor: pointer; color: var(--text-secondary); margin-top: 0.2rem; border-top: 1px solid var(--border-color); padding-top: 0.6rem;">
-                        <input type="checkbox" id="reverse-toggle" onchange="toggleReverse(this.checked)" style="width: 16px; height: 16px; accent-color: var(--color-sync); cursor: pointer;">
+                        <input type="checkbox" id="reverse-toggle" checked onchange="toggleReverse(this.checked)" style="width: 16px; height: 16px; accent-color: var(--color-sync); cursor: pointer;">
                         <span>Newest first (reverse order)</span>
                     </label>
                 </div>
@@ -1433,7 +1433,7 @@ HTML_TEMPLATE = """
     <script>
         let currentImage = null; // Used in queue mode
         let viewMode = 'dashboard';
-        let reverseOrder = false;
+        let reverseOrder = true;
         let currentIndex = 0; // For queue mode
         let totalCount = 0; // For queue mode
 
