@@ -119,6 +119,7 @@ default_settings = {
     'camera_roi': '0.05,0.15,0.3,0.3',
     'video_roi': '0.0,0.0,0.6,0.6',
     'confidence_threshold': 0.70,
+    'spray_cooldown_seconds': 60,
     'notification_type': 'join',
     'email_smtp_server': '192.169.86.113:25',
     'email_to': '',
@@ -155,6 +156,7 @@ def save_settings(settings):
     except Exception as e:
         print("Error saving settings:", e)
 BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
+last_spray_time = 0.0
 
 def send_blast_notification(blast_type, confidence=None):
     settings = load_settings()
@@ -1699,6 +1701,12 @@ HTML_TEMPLATE = """
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Spray Cooldown (seconds)</label>
+                        <input type="number" id="settings-cooldown" min="0" max="600" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Minimum time to wait between sprays. Default: 60s.</span>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Standard Spray Duration (seconds)</label>
                         <input type="number" id="settings-spray-duration" min="1" max="10" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">The standard duration the solenoid is open. Default: 3.0s.</span>
@@ -1805,6 +1813,7 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-roi').value = data.settings.camera_roi;
                     document.getElementById('settings-video-roi').value = data.settings.video_roi || '';
                     document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
+                    document.getElementById('settings-cooldown').value = data.settings.spray_cooldown_seconds || 60;
                     document.getElementById('settings-spray-duration').value = data.settings.spray_duration || 3.0;
                     document.getElementById('settings-long-duration').value = data.settings.long_spray_duration || 5.0;
                     document.getElementById('settings-threshold').value = data.settings.long_spray_threshold_hours || 2.0;
@@ -1840,6 +1849,7 @@ HTML_TEMPLATE = """
             const camera_roi = document.getElementById('settings-roi').value;
             const video_roi = document.getElementById('settings-video-roi').value;
             const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
+            const spray_cooldown_seconds = parseInt(document.getElementById('settings-cooldown').value);
             const spray_duration = parseFloat(document.getElementById('settings-spray-duration').value);
             const long_spray_duration = parseFloat(document.getElementById('settings-long-duration').value);
             const long_spray_threshold_hours = parseFloat(document.getElementById('settings-threshold').value);
@@ -1864,6 +1874,7 @@ HTML_TEMPLATE = """
                         camera_roi,
                         video_roi,
                         confidence_threshold,
+                        spray_cooldown_seconds,
                         spray_duration,
                         long_spray_duration,
                         long_spray_threshold_hours,
@@ -2720,6 +2731,8 @@ def api_settings():
                 settings['video_roi'] = str(data['video_roi']).strip()
             if 'confidence_threshold' in data:
                 settings['confidence_threshold'] = float(data['confidence_threshold'])
+            if 'spray_cooldown_seconds' in data:
+                settings['spray_cooldown_seconds'] = int(data['spray_cooldown_seconds'])
             if 'notification_type' in data:
                 settings['notification_type'] = str(data['notification_type']).strip()
             if 'join_api_key' in data:
@@ -2951,6 +2964,7 @@ def sync():
 
 @app.route('/api/spray', methods=['POST'])
 def spray():
+    global last_spray_time
     import urllib.request
     import urllib.parse
     import json
@@ -2967,6 +2981,7 @@ def spray():
             res_data = response.read().decode('utf-8')
             if not is_test:
                 log_blast('manual')
+                last_spray_time = time.time()
             return jsonify(json.loads(res_data))
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -3058,7 +3073,7 @@ def train_status():
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
-    global automation_enabled
+    global automation_enabled, last_spray_time
     img_data = request.data
     if not img_data:
         return jsonify({'status': 'error', 'message': 'No image data received'}), 400
@@ -3086,15 +3101,30 @@ def predict():
         except Exception as e:
             print("Error auto-classifying {0}: {1}".format(filename, str(e)))
             
-    # Override is_squirrel returned to Pi if automation is disabled
-    response_is_squirrel = is_squirrel if automation_enabled else False
+    # Check spray cooldown
+    current_time = time.time()
+    settings = load_settings()
+    cooldown = float(settings.get('spray_cooldown_seconds', 60))
+    cooldown_active = (current_time - last_spray_time < cooldown)
     
+    # Override is_squirrel returned to Pi if automation is disabled or during cooldown
+    if automation_enabled and is_squirrel and not cooldown_active:
+        response_is_squirrel = True
+    else:
+        response_is_squirrel = False
+        
     duration = get_current_spray_duration()
     
     if response_is_squirrel and confidence > 0.70:
         if not is_test:
             log_blast('auto', confidence)
-            
+            last_spray_time = current_time
+            print("[Cooldown] Solenoid triggered. Cooldown activated for {0}s.".format(cooldown))
+    elif is_squirrel and cooldown_active and automation_enabled:
+        print("[Cooldown] Squirrel detected, but skipping spray because cooldown is active ({0:.1f}s remaining).".format(
+            cooldown - (current_time - last_spray_time)
+        ))
+        
     return jsonify({
         'is_squirrel': response_is_squirrel,
         'confidence': confidence,
