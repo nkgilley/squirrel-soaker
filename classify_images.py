@@ -116,7 +116,8 @@ default_settings = {
     'capture_interval': 15,
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
     'camera_rotation': 0,
-    'camera_roi': '0.0,0.0,0.6,0.6',
+    'camera_roi': '0.05,0.15,0.3,0.3',
+    'video_roi': '0.0,0.0,0.6,0.6',
     'confidence_threshold': 0.70,
     'notification_type': 'join',
     'email_smtp_server': '192.169.86.113:25',
@@ -1681,8 +1682,14 @@ HTML_TEMPLATE = """
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Camera Region of Interest (ROI)</label>
-                        <input type="text" id="settings-roi" placeholder="x,y,w,h (e.g. 0.0,0.0,0.6,0.6)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height). Set empty to disable.</span>
+                        <input type="text" id="settings-roi" placeholder="x,y,w,h (e.g. 0.05,0.15,0.3,0.3)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for still captures. Set empty to disable.</span>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Video Region of Interest (Video ROI)</label>
+                        <input type="text" id="settings-video-roi" placeholder="x,y,w,h (e.g. 0.0,0.0,0.6,0.6)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for video recordings. Set empty to disable.</span>
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
@@ -1796,6 +1803,7 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-gemini-key').value = data.settings.gemini_api_key;
                     document.getElementById('settings-rotation').value = data.settings.camera_rotation;
                     document.getElementById('settings-roi').value = data.settings.camera_roi;
+                    document.getElementById('settings-video-roi').value = data.settings.video_roi || '';
                     document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
                     document.getElementById('settings-spray-duration').value = data.settings.spray_duration || 3.0;
                     document.getElementById('settings-long-duration').value = data.settings.long_spray_duration || 5.0;
@@ -1830,6 +1838,7 @@ HTML_TEMPLATE = """
             const gemini_api_key = document.getElementById('settings-gemini-key').value;
             const camera_rotation = parseInt(document.getElementById('settings-rotation').value);
             const camera_roi = document.getElementById('settings-roi').value;
+            const video_roi = document.getElementById('settings-video-roi').value;
             const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
             const spray_duration = parseFloat(document.getElementById('settings-spray-duration').value);
             const long_spray_duration = parseFloat(document.getElementById('settings-long-duration').value);
@@ -1853,6 +1862,7 @@ HTML_TEMPLATE = """
                         gemini_api_key,
                         camera_rotation,
                         camera_roi,
+                        video_roi,
                         confidence_threshold,
                         spray_duration,
                         long_spray_duration,
@@ -2706,6 +2716,8 @@ def api_settings():
                 settings['camera_rotation'] = int(data['camera_rotation'])
             if 'camera_roi' in data:
                 settings['camera_roi'] = str(data['camera_roi']).strip()
+            if 'video_roi' in data:
+                settings['video_roi'] = str(data['video_roi']).strip()
             if 'confidence_threshold' in data:
                 settings['confidence_threshold'] = float(data['confidence_threshold'])
             if 'notification_type' in data:
@@ -2947,7 +2959,7 @@ def spray():
         duration = get_current_spray_duration()
         settings = load_settings()
         rotation = settings.get('camera_rotation', 0)
-        roi = settings.get('camera_roi', '')
+        roi = settings.get('video_roi', '')
         encoded_roi = urllib.parse.quote(roi) if roi else ''
         url = 'http://{0}:8080/spray?duration={1}&rotation={2}&roi={3}'.format(PI_IP, duration, rotation, encoded_roi)
         req = urllib.request.Request(url, method='POST')
