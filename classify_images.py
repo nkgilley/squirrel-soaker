@@ -116,7 +116,7 @@ default_settings = {
     'capture_interval': 15,
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
     'camera_rotation': 0,
-    'camera_roi': '0.05,0.15,0.3,0.3',
+    'camera_roi': '0.0,0.0,0.6,0.6',
     'confidence_threshold': 0.70,
     'notification_type': 'join',
     'email_smtp_server': '192.169.86.113:25',
@@ -1681,7 +1681,7 @@ HTML_TEMPLATE = """
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Camera Region of Interest (ROI)</label>
-                        <input type="text" id="settings-roi" placeholder="x,y,w,h (e.g. 0.05,0.15,0.3,0.3)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        <input type="text" id="settings-roi" placeholder="x,y,w,h (e.g. 0.0,0.0,0.6,0.6)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height). Set empty to disable.</span>
                     </div>
 
@@ -2940,11 +2940,16 @@ def sync():
 @app.route('/api/spray', methods=['POST'])
 def spray():
     import urllib.request
+    import urllib.parse
     import json
     is_test = request.args.get('test') == 'true'
     try:
         duration = get_current_spray_duration()
-        url = 'http://{0}:8080/spray?duration={1}'.format(PI_IP, duration)
+        settings = load_settings()
+        rotation = settings.get('camera_rotation', 0)
+        roi = settings.get('camera_roi', '')
+        encoded_roi = urllib.parse.quote(roi) if roi else ''
+        url = 'http://{0}:8080/spray?duration={1}&rotation={2}&roi={3}'.format(PI_IP, duration, rotation, encoded_roi)
         req = urllib.request.Request(url, method='POST')
         with urllib.request.urlopen(req, timeout=25) as response:
             res_data = response.read().decode('utf-8')
