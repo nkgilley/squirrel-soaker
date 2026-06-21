@@ -1,0 +1,8 @@
+.env
+.venv/
+data/
+__pycache__/
+*.pyc
+.DS_Store
+test_rot0.jpg
+test_camera.jpg
