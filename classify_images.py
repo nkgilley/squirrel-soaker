@@ -461,8 +461,22 @@ def process_synced_videos():
             except subprocess.CalledProcessError as e:
                 print("Error converting {0}: {1}".format(filename, e.stderr.decode('utf-8', errors='ignore')))
 
+def get_video_timestamp(filename):
+    """Parses vid_YYYYMMDD_HHMMSS.mp4 to a datetime object."""
+    import re
+    import datetime
+    match = re.match(r'vid_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\.mp4', filename)
+    if match:
+        parts = [int(p) for p in match.groups()]
+        try:
+            return datetime.datetime(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
+        except Exception:
+            return None
+    return None
+
 # Initial conversion on startup
 process_synced_videos()
+
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -485,6 +499,7 @@ HTML_TEMPLATE = """
             --color-not-squirrel: #ef4444;
             --color-delete: #f59e0b;
             --color-sync: #3b82f6;
+            --color-accuracy: #a855f7;
             
             --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.15);
         }
@@ -941,7 +956,7 @@ HTML_TEMPLATE = """
         /* --- Dashboard CSS --- */
         .dash-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 1.25rem;
             width: 100%;
             margin-bottom: 1.5rem;
@@ -969,6 +984,7 @@ HTML_TEMPLATE = """
         .dash-card.blasted::before { background-color: var(--color-squirrel); }
         .dash-card.status::before { background-color: var(--color-sync); }
         .dash-card.queue::before { background-color: var(--color-delete); }
+        .dash-card.accuracy::before { background-color: var(--color-accuracy); }
 
         .dash-card-val {
             font-size: 2.25rem;
@@ -1315,6 +1331,7 @@ HTML_TEMPLATE = """
                 <video id="modal-video-element" controls autoplay loop style="max-width: 100%; max-height: 100%; object-fit: contain;"></video>
             </div>
             <div id="modal-video-filename" class="image-filename" style="margin-top: 1rem; text-align: center;"></div>
+            <div id="modal-video-classification-actions" style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem; margin-bottom: 0.5rem;"></div>
         </div>
     </div>
 
@@ -1331,6 +1348,7 @@ HTML_TEMPLATE = """
         let totalPages = 1;
         let galleryTotalCount = 0;
         let modalIndex = 0; // Index of the currently open image in the galleryImages array
+        let videoClassifications = {};
 
         function toggleReverse(checked) {
             reverseOrder = checked;
@@ -1461,6 +1479,11 @@ HTML_TEMPLATE = """
                         <div class="dash-card-val" id="dash-queue-count">...</div>
                         <div class="dash-card-sub" id="dash-queue-sub">Raw images waiting</div>
                     </div>
+                    <div class="dash-card accuracy">
+                        <div class="dash-card-label">Inference Accuracy</div>
+                        <div class="dash-card-val" id="dash-accuracy-rate">-%</div>
+                        <div class="dash-card-sub" id="dash-accuracy-sub">Accurate: 0 | False Pos: 0</div>
+                    </div>
                 </div>
 
                 <div class="dash-row">
@@ -1557,6 +1580,15 @@ HTML_TEMPLATE = """
                 const blastedSub = document.getElementById('dash-blasted-sub');
                 if (blastedVal) blastedVal.innerText = blastsData.total_blasts;
                 if (blastedSub) blastedSub.innerText = `Auto: ${blastsData.auto_blasts} | Manual: ${blastsData.manual_blasts}`;
+
+                const accuracyVal = document.getElementById('dash-accuracy-rate');
+                const accuracySub = document.getElementById('dash-accuracy-sub');
+                if (accuracyVal) {
+                    accuracyVal.innerText = blastsData.accuracy_rate !== null ? `${blastsData.accuracy_rate}%` : '-%';
+                }
+                if (accuracySub) {
+                    accuracySub.innerText = `Accurate: ${blastsData.classified_accurate || 0} | False Pos: ${blastsData.classified_false_positive || 0}`;
+                }
 
                 renderBlastsChart(blastsData.blasts);
                 refreshDashboardSnapshot();
@@ -2252,10 +2284,15 @@ HTML_TEMPLATE = """
                 
                 const workspace = document.getElementById('workspace-card');
                 const videos = data.videos;
+                videoClassifications = data.classifications || {};
                 
                 if (videos && videos.length > 0) {
                     let cardsHtml = '';
                     videos.forEach((vid) => {
+                        const currentClassification = videoClassifications[vid] || null;
+                        const isAccurate = currentClassification === 'accurate';
+                        const isFalsePositive = currentClassification === 'false_positive';
+                        
                         cardsHtml += `
                             <div class="gallery-card" onclick="openVideoModal('${vid}')">
                                 <div class="card-actions-overlay">
@@ -2264,7 +2301,19 @@ HTML_TEMPLATE = """
                                 <div style="height: 150px; background: #020617; display: flex; align-items: center; justify-content: center; font-size: 3rem; border-bottom: 1px solid var(--border-color);">
                                     📹
                                 </div>
-                                <div class="gallery-card-info">${vid}</div>
+                                <div class="gallery-card-info" style="border-bottom: none;">${vid}</div>
+                                <div style="display: flex; gap: 0.5rem; padding: 0.5rem 0.75rem 0.75rem 0.75rem; background: rgba(0, 0, 0, 0.2); border-top: 1px solid rgba(255,255,255,0.05);" onclick="event.stopPropagation()">
+                                    <button class="btn btn-classify-video accurate-btn ${isAccurate ? 'active' : ''}" 
+                                            style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                                            onclick="classifyVideo('${vid}', '${isAccurate ? '' : 'accurate'}')">
+                                        Accurate 🐿️
+                                    </button>
+                                    <button class="btn btn-classify-video false-positive-btn ${isFalsePositive ? 'active' : ''}" 
+                                            style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isFalsePositive ? 'var(--color-not-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isFalsePositive ? 'rgba(239, 68, 68, 0.2)' : 'transparent'}; color: ${isFalsePositive ? 'var(--color-not-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                                            onclick="classifyVideo('${vid}', '${isFalsePositive ? '' : 'false_positive'}')">
+                                        False Pos ❌
+                                    </button>
+                                </div>
                             </div>
                         `;
                     });
@@ -2420,7 +2469,57 @@ HTML_TEMPLATE = """
         function openVideoModal(filename) {
             document.getElementById('modal-video-element').src = `/video/${filename}`;
             document.getElementById('modal-video-filename').innerText = filename;
+            updateModalVideoClassifications(filename);
             document.getElementById('video-modal').classList.add('show');
+        }
+
+        function updateModalVideoClassifications(filename) {
+            const container = document.getElementById('modal-video-classification-actions');
+            if (!container) return;
+            
+            const currentClassification = videoClassifications[filename] || null;
+            const isAccurate = currentClassification === 'accurate';
+            const isFalsePositive = currentClassification === 'false_positive';
+            
+            container.innerHTML = `
+                <button class="btn" 
+                        style="padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                        onclick="classifyVideoModal('${filename}', '${isAccurate ? '' : 'accurate'}')">
+                    Accurate 🐿️
+                </button>
+                <button class="btn" 
+                        style="padding: 0.5rem 1.25rem; font-weight: 600; border-radius: 8px; border: 1px solid ${isFalsePositive ? 'var(--color-not-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isFalsePositive ? 'rgba(239, 68, 68, 0.2)' : 'transparent'}; color: ${isFalsePositive ? 'var(--color-not-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
+                        onclick="classifyVideoModal('${filename}', '${isFalsePositive ? '' : 'false_positive'}')">
+                    False Positive ❌
+                </button>
+            `;
+        }
+
+        async function classifyVideo(filename, classification) {
+            try {
+                const res = await fetch('/api/classify_video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ video_name: filename, classification: classification || null })
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    videoClassifications[filename] = classification || null;
+                    if (viewMode === 'videos') {
+                        // Triggers redrawing of the cards grid to reflect changes
+                        loadNext();
+                    }
+                } else {
+                    alert("Error: " + data.message);
+                }
+            } catch (e) {
+                console.error("Error classifying video:", e);
+            }
+        }
+
+        async function classifyVideoModal(filename, classification) {
+            await classifyVideo(filename, classification);
+            updateModalVideoClassifications(filename);
         }
 
         function closeVideoModal() {
@@ -2686,13 +2785,45 @@ def list_images():
 
 @app.route('/api/list_videos')
 def list_videos():
+    import json
+    import datetime
     reverse = request.args.get('reverse', 'false') == 'true'
     if os.path.exists(VIDEOS_DIR):
         files = sorted([f for f in os.listdir(VIDEOS_DIR) if f.lower().endswith('.mp4')], reverse=reverse)
     else:
         files = []
+        
+    classifications = {}
+    blasts = []
+    if os.path.exists(BLASTS_LOG_FILE):
+        try:
+            with open(BLASTS_LOG_FILE, 'r') as f:
+                blasts = json.load(f)
+                if not isinstance(blasts, list):
+                    blasts = []
+        except Exception as e:
+            print("Error reading blasts log:", e)
+            
+    for f in files:
+        video_time = get_video_timestamp(f)
+        if not video_time:
+            continue
+        for entry in blasts:
+            entry_time_str = entry.get('timestamp')
+            if not entry_time_str:
+                continue
+            try:
+                entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                if abs((video_time - entry_time).total_seconds()) < 6.0:
+                    if 'classification' in entry:
+                        classifications[f] = entry['classification']
+                    break
+            except Exception:
+                continue
+                
     return jsonify({
         'videos': files,
+        'classifications': classifications,
         'stats': get_stats(),
         'has_history': len(classification_history) > 0
     })
@@ -2712,6 +2843,81 @@ def delete_video():
         except Exception as e:
             return jsonify({'status': 'error', 'message': str(e)}), 500
     return jsonify({'status': 'error', 'message': 'Video not found'}), 404
+
+@app.route('/api/classify_video', methods=['POST'])
+def classify_video():
+    import json
+    import datetime
+    data = request.get_json() or {}
+    video_name = data.get('video_name')
+    classification = data.get('classification') # 'accurate', 'false_positive', or null
+    
+    if not video_name:
+        return jsonify({'status': 'error', 'message': 'Missing video_name'}), 400
+        
+    if classification not in [None, 'accurate', 'false_positive']:
+        return jsonify({'status': 'error', 'message': 'Invalid classification'}), 400
+        
+    video_time = get_video_timestamp(video_name)
+    if not video_time:
+        return jsonify({'status': 'error', 'message': 'Invalid video filename format'}), 400
+        
+    # Read blasts log
+    blasts = []
+    if os.path.exists(BLASTS_LOG_FILE):
+        try:
+            with open(BLASTS_LOG_FILE, 'r') as f:
+                blasts = json.load(f)
+                if not isinstance(blasts, list):
+                    blasts = []
+        except Exception as e:
+            print("Error reading blasts log:", e)
+            
+    # Find closest entry
+    closest_entry = None
+    min_diff = 6.0 # 5 second threshold
+    
+    for entry in blasts:
+        entry_time_str = entry.get('timestamp')
+        if not entry_time_str:
+            continue
+        try:
+            entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+            diff = abs((video_time - entry_time).total_seconds())
+            if diff < min_diff:
+                min_diff = diff
+                closest_entry = entry
+        except Exception:
+            continue
+            
+    if closest_entry:
+        if classification:
+            closest_entry['classification'] = classification
+        else:
+            closest_entry.pop('classification', None)
+    else:
+        # Fallback: create a new entry if classification is provided
+        if classification:
+            new_entry = {
+                'timestamp': video_time.strftime("%Y-%m-%d %H:%M:%S"),
+                'type': 'auto',
+                'classification': classification
+            }
+            blasts.append(new_entry)
+            
+    # Save blasts log
+    try:
+        with open(BLASTS_LOG_FILE, 'w') as f:
+            json.dump(blasts, f, indent=2)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': 'Error writing to blasts log: {0}'.format(e)}), 500
+        
+    return jsonify({
+        'status': 'success',
+        'stats': get_stats(),
+        'has_history': len(classification_history) > 0
+    })
+
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
@@ -2805,11 +3011,19 @@ def get_blasts():
         except Exception as e:
             print("Error reading blasts log:", e)
             
+    accurate_count = len([b for b in blasts if b.get('classification') == 'accurate'])
+    false_positive_count = len([b for b in blasts if b.get('classification') == 'false_positive'])
+    total_classified = accurate_count + false_positive_count
+    accuracy_rate = round((accurate_count / total_classified) * 100, 1) if total_classified > 0 else None
+            
     return jsonify({
         'blasts': blasts,
         'total_blasts': len(blasts),
         'auto_blasts': len([b for b in blasts if b.get('type') == 'auto']),
-        'manual_blasts': len([b for b in blasts if b.get('type') == 'manual'])
+        'manual_blasts': len([b for b in blasts if b.get('type') == 'manual']),
+        'classified_accurate': accurate_count,
+        'classified_false_positive': false_positive_count,
+        'accuracy_rate': accuracy_rate
     })
 
 @app.route('/api/latest_image')
