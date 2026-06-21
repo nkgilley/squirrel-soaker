@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  squirrel-soaker:
+    build: .
+    container_name: squirrel-soaker
+    image: squirrel-soaker:latest
+    ports:
+      - "5001:5001"
+    volumes:
+      # Persist images, videos, and dataset folders on the host
+      - ./data:/app/data
+      # Optionally mount model.pth to persist model updates
+      - ./model.pth:/app/model.pth
+    restart: unless-stopped
