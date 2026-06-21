@@ -13,7 +13,8 @@ CAPTURE_INTERVAL_SECONDS = 30
 START_HOUR = 6    # 6:00 AM
 END_HOUR = 20     # 8:00 PM
 ROTATION = 0      # Rotation in degrees (0, 90, 180, 270)
-ROI = "0.0,0.0,0.6,0.6" # Region of Interest (digital zoom)
+ROI = "0.05,0.15,0.3,0.3" # Region of Interest (digital zoom)
+VIDEO_ROI = "0.0,0.0,0.6,0.6" # Video Region of Interest (digital zoom)
 WIDTH = 1280
 HEIGHT = 960
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
@@ -60,7 +61,7 @@ def is_daylight(dt):
 CONFIDENCE_THRESHOLD = 0.70
 
 def fetch_config_from_mac():
-    global CAPTURE_INTERVAL_SECONDS, ROTATION, ROI, CONFIDENCE_THRESHOLD
+    global CAPTURE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
     import urllib.request
     import json
     url = "http://{0}:5001/api/settings".format(MAC_IP)
@@ -76,10 +77,12 @@ def fetch_config_from_mac():
                     ROTATION = int(settings['camera_rotation'])
                 if 'camera_roi' in settings:
                     ROI = str(settings['camera_roi']).strip()
+                if 'video_roi' in settings:
+                    VIDEO_ROI = str(settings['video_roi']).strip()
                 if 'confidence_threshold' in settings:
                     CONFIDENCE_THRESHOLD = float(settings['confidence_threshold'])
-                print("[Config] Dynamic settings updated: Interval={0}s, Rotation={1}°, ROI={2}, Threshold={3:.2f}".format(
-                    CAPTURE_INTERVAL_SECONDS, ROTATION, ROI, CONFIDENCE_THRESHOLD
+                print("[Config] Dynamic settings updated: Interval={0}s, Rotation={1}°, ROI={2}, VideoROI={3}, Threshold={4:.2f}".format(
+                    CAPTURE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
                 ))
     except Exception as e:
         print("[Config] Could not sync dynamic settings from Mac (offline): {0}".format(e))
@@ -119,7 +122,7 @@ def trigger_spray_locally(duration):
     import urllib.request
     import urllib.parse
     try:
-        encoded_roi = urllib.parse.quote(ROI) if ROI else ''
+        encoded_roi = urllib.parse.quote(VIDEO_ROI) if VIDEO_ROI else ''
         url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}'.format(duration, ROTATION, encoded_roi)
         req = urllib.request.Request(url, method='POST')
         with urllib.request.urlopen(req, timeout=25) as response:
