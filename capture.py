@@ -13,7 +13,7 @@ CAPTURE_INTERVAL_SECONDS = 30
 START_HOUR = 6    # 6:00 AM
 END_HOUR = 20     # 8:00 PM
 ROTATION = 0      # Rotation in degrees (0, 90, 180, 270)
-ROI = "0.05,0.15,0.3,0.3" # Region of Interest (digital zoom)
+ROI = "0.0,0.0,0.6,0.6" # Region of Interest (digital zoom)
 WIDTH = 1280
 HEIGHT = 960
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
@@ -117,8 +117,10 @@ def check_for_squirrel(filepath, is_test=False):
 def trigger_spray_locally(duration):
     """Tells the local trigger_server to spray water for the specified duration."""
     import urllib.request
+    import urllib.parse
     try:
-        url = 'http://localhost:8080/spray?duration={0}'.format(duration)
+        encoded_roi = urllib.parse.quote(ROI) if ROI else ''
+        url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}'.format(duration, ROTATION, encoded_roi)
         req = urllib.request.Request(url, method='POST')
         with urllib.request.urlopen(req, timeout=25) as response:
             print("[Trigger] Spray triggered successfully with duration {0}s.".format(duration))

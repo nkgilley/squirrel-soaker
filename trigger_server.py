@@ -25,19 +25,22 @@ SPRAY_DURATION_SECONDS = 3.0
 # Add the current directory to sys.path to allow importing capture
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-def record_video(duration_ms=5000):
+def record_video(duration_ms=5000, rotation=None, roi=None):
     """Records a video using raspivid in a background thread."""
-    # Try to import capture to get rotation, ROI, and local timezone time
+    # Try to import capture to get local timezone time and defaults if parameters are None
     try:
         import capture
         local_time = capture.get_eastern_time()
-        rot = getattr(capture, 'ROTATION', 0)
-        roi = getattr(capture, 'ROI', None)
+        default_rot = getattr(capture, 'ROTATION', 0)
+        default_roi = getattr(capture, 'ROI', None)
     except Exception as e:
         print("[Video] Warning: could not import capture config: {0}".format(e))
         local_time = datetime.datetime.now()
-        rot = 0
-        roi = None
+        default_rot = 0
+        default_roi = None
+
+    rot = rotation if rotation is not None else default_rot
+    selected_roi = roi if roi is not None else default_roi
 
     filename = "vid_{0}.h264".format(local_time.strftime("%Y%m%d_%H%M%S"))
     captures_dir = os.path.expanduser('~/squirrel_soaker/captures')
@@ -52,10 +55,10 @@ def record_video(duration_ms=5000):
     cmd = ["raspivid", "-t", str(duration_ms), "-w", "1280", "-h", "720", "-o", filepath]
     if rot in [90, 180, 270]:
         cmd.extend(["-rot", str(rot)])
-    if roi:
-        cmd.extend(["-roi", roi])
+    if selected_roi:
+        cmd.extend(["-roi", selected_roi])
 
-    print("[Video] Recording {0}s video to {1}...".format(duration_ms / 1000.0, filepath))
+    print("[Video] Recording {0}s video to {1}... (rotation={2}, roi={3})".format(duration_ms / 1000.0, filepath, rot, selected_roi))
     try:
         subprocess.check_call(cmd)
         print("[Video] Finished recording: {0}".format(filepath))
@@ -72,21 +75,31 @@ class TriggerHandler(BaseHTTPRequestHandler):
         parsed_path = urlparse(self.path)
         if parsed_path.path == '/spray':
             duration = SPRAY_DURATION_SECONDS
+            rotation = None
+            roi = None
+            
             query = parse_qs(parsed_path.query)
             if 'duration' in query:
                 try:
                     duration = float(query['duration'][0])
                 except ValueError:
                     pass
+            if 'rotation' in query:
+                try:
+                    rotation = int(query['rotation'][0])
+                except ValueError:
+                    pass
+            if 'roi' in query:
+                roi = query['roi'][0].strip()
 
-            print("Activating solenoid on GPIO {0} for {1}s...".format(
-                SOLENOID_PIN, duration
+            print("Activating solenoid on GPIO {0} for {1}s... (rotation: {2}, roi: {3})".format(
+                SOLENOID_PIN, duration, rotation, roi
             ))
             
             # Start background video recording thread
             # Record for spray duration + 2.0s (min 5.0s)
             video_duration_ms = int(max(5.0, duration + 2.0) * 1000)
-            video_thread = threading.Thread(target=record_video, args=(video_duration_ms,))
+            video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi))
             video_thread.daemon = True
             video_thread.start()
             
