@@ -17,6 +17,10 @@ ROI = "0.05,0.15,0.3,0.3"
 VIDEO_ROI = "0.0,0.0,0.6,0.6"
 WIDTH = 1280
 HEIGHT = 960
+ANALYSIS_WIDTH = 960
+ANALYSIS_HEIGHT = 720
+ANALYSIS_JPEG_QUALITY = 65
+REVIEW_JPEG_QUALITY = 90
 RASPISTILL_TIMEOUT_SECONDS = 20
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 MAC_IP = '192.168.86.137'
@@ -56,6 +60,7 @@ def is_daylight(dt):
 
 def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
+    global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     import urllib.request
     import json
 
@@ -80,8 +85,19 @@ def fetch_config_from_mac():
                     VIDEO_ROI = str(settings['video_roi']).strip()
                 if 'confidence_threshold' in settings:
                     CONFIDENCE_THRESHOLD = float(settings['confidence_threshold'])
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, Rotation={2}, ROI={3}, VideoROI={4}, Threshold={5:.2f}".format(
-                    ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
+                if 'analysis_width' in settings:
+                    ANALYSIS_WIDTH = int(settings['analysis_width'])
+                if 'analysis_height' in settings:
+                    ANALYSIS_HEIGHT = int(settings['analysis_height'])
+                if 'analysis_jpeg_quality' in settings:
+                    ANALYSIS_JPEG_QUALITY = int(settings['analysis_jpeg_quality'])
+                if 'review_jpeg_quality' in settings:
+                    REVIEW_JPEG_QUALITY = int(settings['review_jpeg_quality'])
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Rotation={8}, ROI={9}, VideoROI={10}, Threshold={11:.2f}".format(
+                    ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
+                    ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
+                    WIDTH, HEIGHT, REVIEW_JPEG_QUALITY,
+                    ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
                 ))
     except Exception as e:
         print("[Config] Could not sync dynamic settings from Mac: {0}".format(e))
@@ -142,13 +158,31 @@ def capture_image():
     filename = "img_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S"))
     filepath = os.path.join(OUTPUT_DIR, filename)
 
-    cmd = ["raspistill", "-w", str(WIDTH), "-h", str(HEIGHT), "-o", filepath, "-t", "1000"]
+    capture_width = WIDTH if should_save else ANALYSIS_WIDTH
+    capture_height = HEIGHT if should_save else ANALYSIS_HEIGHT
+    jpeg_quality = REVIEW_JPEG_QUALITY if should_save else ANALYSIS_JPEG_QUALITY
+
+    cmd = [
+        "raspistill",
+        "-w", str(capture_width),
+        "-h", str(capture_height),
+        "-q", str(jpeg_quality),
+        "-o", filepath,
+        "-t", "1000"
+    ]
     if ROTATION in [90, 180, 270]:
         cmd.extend(["-rot", str(ROTATION)])
     if ROI:
         cmd.extend(["-roi", ROI])
 
-    print("[{0}] Capturing: {1}".format(local_time.strftime("%Y-%m-%d %H:%M:%S"), filepath))
+    print("[{0}] Capturing: {1} ({2}x{3} q{4}, save={5})".format(
+        local_time.strftime("%Y-%m-%d %H:%M:%S"),
+        filepath,
+        capture_width,
+        capture_height,
+        jpeg_quality,
+        1 if should_save else 0
+    ))
 
     try:
         subprocess.check_call(cmd, timeout=RASPISTILL_TIMEOUT_SECONDS)
