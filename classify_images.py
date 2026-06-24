@@ -7,6 +7,7 @@ import threading
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, select, update, delete, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 import datetime
+from collections import deque
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -480,7 +481,27 @@ BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
 last_spray_time = 0.0
 latest_pi_status = {}
 latest_predict_metrics = {}
+health_history = deque(maxlen=720)
 telemetry_lock = threading.Lock()
+
+def add_health_sample(source, pi=None, predict=None):
+    pi = pi or {}
+    predict = predict or {}
+    sample = {
+        't': time.time(),
+        'source': source,
+        'pi_status': pi.get('status'),
+        'loop_ms': pi.get('total_ms'),
+        'capture_ms': pi.get('capture_ms'),
+        'upload_ms': pi.get('upload_ms'),
+        'predict_total_ms': predict.get('total_ms') or pi.get('server_metrics', {}).get('total_ms'),
+        'model_ms': predict.get('model_ms') or pi.get('server_metrics', {}).get('model_ms'),
+        'motion_score': pi.get('motion_score'),
+        'input_bytes': predict.get('input_bytes') or pi.get('file_bytes'),
+        'live_bytes': predict.get('live_bytes'),
+        'confidence': predict.get('confidence') if predict.get('confidence') is not None else pi.get('confidence')
+    }
+    health_history.append(sample)
 
 def get_local_base_url():
     import socket
@@ -2421,9 +2442,14 @@ HTML_TEMPLATE = """
         }
 
         let blastsChart = null;
+        let healthChart = null;
 
         async function renderDashboardView() {
             const workspace = document.getElementById('workspace-card');
+            if (healthChart) {
+                healthChart.destroy();
+                healthChart = null;
+            }
             workspace.innerHTML = `
                 <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1.5rem;">
                     <h2 style="font-weight: 600; font-size: 1.25rem;">System Dashboard 📊</h2>
@@ -2489,6 +2515,9 @@ HTML_TEMPLATE = """
                             <span id="health-status-pill" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">Checking...</span>
                         </div>
                         <div id="health-metrics-grid" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; font-size: 0.85rem;"></div>
+                        <div style="height: 260px; margin-top: 1rem; position: relative;">
+                            <canvas id="health-chart"></canvas>
+                        </div>
                     </div>
                 </div>
             `;
@@ -2627,8 +2656,133 @@ HTML_TEMPLATE = """
                         metricTile('Motion', pi.motion_score === undefined || pi.motion_score === null ? '--' : `${Number(pi.motion_score).toFixed(2)} / ${settings.motion_threshold}`)
                     ].join('');
                 }
+                await renderHealthChart();
             } catch (e) {
                 console.error("Error updating health panel:", e);
+            }
+        }
+
+        async function renderHealthChart() {
+            const canvas = document.getElementById('health-chart');
+            if (!canvas) return;
+
+            try {
+                const res = await fetch('/api/health/history?seconds=600');
+                const data = await res.json();
+                const samples = data.samples || [];
+                const labels = samples.map(s => {
+                    const d = new Date(s.t * 1000);
+                    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                });
+
+                const series = (key) => samples.map(s => s[key] === undefined || s[key] === null ? null : Number(s[key]));
+
+                const chartData = {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Pi Loop',
+                            data: series('loop_ms'),
+                            borderColor: '#60a5fa',
+                            backgroundColor: 'rgba(96, 165, 250, 0.12)',
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Upload',
+                            data: series('upload_ms'),
+                            borderColor: '#34d399',
+                            backgroundColor: 'rgba(52, 211, 153, 0.12)',
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Predict',
+                            data: series('predict_total_ms'),
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Model',
+                            data: series('model_ms'),
+                            borderColor: '#f87171',
+                            backgroundColor: 'rgba(248, 113, 113, 0.12)',
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Motion',
+                            data: series('motion_score'),
+                            borderColor: '#a855f7',
+                            backgroundColor: 'rgba(168, 85, 247, 0.12)',
+                            borderDash: [4, 4],
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                };
+
+                if (healthChart) {
+                    healthChart.data = chartData;
+                    healthChart.update('none');
+                    return;
+                }
+
+                healthChart = new Chart(canvas, {
+                    type: 'line',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        scales: {
+                            x: {
+                                grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                                ticks: {
+                                    color: '#94a3b8',
+                                    maxTicksLimit: 6,
+                                    font: { family: 'Outfit' }
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: 'ms', color: '#94a3b8' },
+                                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                                ticks: { color: '#94a3b8', font: { family: 'Outfit' } }
+                            },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                title: { display: true, text: 'motion', color: '#94a3b8' },
+                                grid: { drawOnChartArea: false },
+                                ticks: { color: '#94a3b8', font: { family: 'Outfit' } }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                labels: {
+                                    color: '#f8fafc',
+                                    usePointStyle: true,
+                                    boxWidth: 8,
+                                    font: { family: 'Outfit' }
+                                }
+                            },
+                            tooltip: {
+                                titleFont: { family: 'Outfit' },
+                                bodyFont: { family: 'Outfit' }
+                            }
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Error rendering health chart:", e);
             }
         }
 
@@ -5633,6 +5787,7 @@ def pi_status():
     data['received_at'] = time.time()
     with telemetry_lock:
         latest_pi_status = data
+        add_health_sample('pi', pi=data, predict=data.get('server_metrics', {}))
     return jsonify({'status': 'success'})
 
 @app.route('/api/health')
@@ -5676,6 +5831,17 @@ def api_health():
             'camera_rotation': settings.get('camera_rotation'),
             'confidence_threshold': settings.get('confidence_threshold')
         }
+    })
+
+@app.route('/api/health/history')
+def api_health_history():
+    since_seconds = request.args.get('seconds', default=600, type=int)
+    cutoff = time.time() - max(30, min(since_seconds, 86400))
+    with telemetry_lock:
+        samples = [s for s in list(health_history) if s.get('t', 0) >= cutoff]
+    return jsonify({
+        'status': 'success',
+        'samples': samples
     })
 
 @app.route('/api/toggle_automation', methods=['POST'])
