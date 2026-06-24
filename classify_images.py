@@ -1035,6 +1035,7 @@ def get_next_raw_image():
     return None
 
 video_processing_lock = threading.Lock()
+sync_lock = threading.Lock()
 
 def process_synced_videos():
     """Finds all .h264 files in RAW_DIR, converts them to .mp4 in VIDEOS_DIR, generates thumbnails, and deletes source files."""
@@ -4306,6 +4307,10 @@ HTML_TEMPLATE = """
         // Auto-sync function
         async function autoSync() {
             try {
+                if (viewMode === 'dashboard') {
+                    await updateDashboardData();
+                    return;
+                }
                 const useGemini = document.getElementById('gemini-toggle').checked;
                 const res = await fetch('/api/sync', { 
                     method: 'POST',
@@ -5260,6 +5265,13 @@ def undo():
 
 @app.route('/api/sync', methods=['POST'])
 def sync():
+    if not sync_lock.acquire(False):
+        return jsonify({
+            'status': 'success',
+            'output': 'Sync already running; skipped overlapping request.',
+            'stats': get_stats()
+        })
+
     data = request.get_json(silent=True) or {}
     use_gemini = data.get('auto_label', False)
     settings = load_settings()
@@ -5336,6 +5348,8 @@ def sync():
             'status': 'error',
             'message': str(e)
         }), 500
+    finally:
+        sync_lock.release()
 
 @app.route('/api/spray', methods=['POST'])
 def spray():
