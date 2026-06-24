@@ -395,6 +395,9 @@ default_settings = {
     'analysis_height': 720,
     'analysis_jpeg_quality': 65,
     'review_jpeg_quality': 90,
+    'motion_prefilter_enabled': True,
+    'motion_threshold': 6.0,
+    'motion_force_interval': 30,
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
     'camera_rotation': 0,
     'camera_roi': '0.05,0.15,0.3,0.3',
@@ -475,8 +478,22 @@ def make_live_frame_jpeg(img_data, settings=None):
 
 BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
 last_spray_time = 0.0
+latest_pi_status = {}
+latest_predict_metrics = {}
+telemetry_lock = threading.Lock()
 
-def send_blast_notification(blast_type, confidence=None):
+def get_local_base_url():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('10.255.255.255', 1))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = '127.0.0.1'
+    return "http://{0}:5001".format(local_ip)
+
+def send_blast_notification(blast_type, confidence=None, image_filename=None):
     # Instead of running sync_images.sh (which fails in Docker), we poll for the newly
     # uploaded and converted video file to arrive in data/videos/ from the Pi (takes up to 10s).
     video_path = None
@@ -505,25 +522,23 @@ def send_blast_notification(blast_type, confidence=None):
     notification_type = settings.get('notification_type', 'join')
     
     title = "🐿️ Squirrel Blasted! 💦"
+    base_url = get_local_base_url()
+    image_url = "{0}/image/{1}".format(base_url, image_filename) if image_filename else None
+
     if blast_type == 'auto':
         msg = "Automatic repeller triggered a water spray! (Model confidence: {0:.1f}%)".format(confidence * 100 if confidence else 0)
     else:
         msg = "Manual spray triggered from the web interface."
+
+    if image_url:
+        msg += "\n\nTrigger image: {0}".format(image_url)
         
     # Construct video URL for Join Push (Try public hosts first, fallback to local IP)
     video_url = None
     if video_path and video_filename:
         video_url = upload_video_to_public_host(video_path)
         if not video_url:
-            import socket
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(('10.255.255.255', 1))
-                local_ip = s.getsockname()[0]
-                s.close()
-            except Exception:
-                local_ip = '127.0.0.1'
-            video_url = "http://{0}:5001/video/{1}".format(local_ip, video_filename)
+            video_url = "{0}/video/{1}".format(base_url, video_filename)
         
         # Append the public/local video URL directly to the notification message body for visibility
         msg += "\n\nWatch video: {0}".format(video_url)
@@ -546,6 +561,8 @@ def send_blast_notification(blast_type, confidence=None):
                 if video_url:
                     params['url'] = video_url
                     params['file'] = video_url
+                elif image_url:
+                    params['url'] = image_url
                 url = "https://joinjoaomgcd.appspot.com/_ah/api/messaging/v1/sendPush?" + urllib.parse.urlencode(params)
                 req = urllib.request.Request(url, method='GET')
                 with urllib.request.urlopen(req, timeout=5) as response:
@@ -582,6 +599,21 @@ def send_blast_notification(blast_type, confidence=None):
                 # Attach text message
                 mime_msg.attach(MIMEText(msg, 'plain'))
                 
+                if image_filename:
+                    for img_dir in [SQUIRREL_DIR, RAW_DIR, NOT_SQUIRREL_DIR]:
+                        img_path = os.path.join(img_dir, image_filename)
+                        if os.path.exists(img_path):
+                            try:
+                                with open(img_path, 'rb') as attachment:
+                                    part = MIMEBase('image', 'jpeg')
+                                    part.set_payload(attachment.read())
+                                    encoders.encode_base64(part)
+                                    part.add_header('Content-Disposition', 'attachment; filename= {0}'.format(image_filename))
+                                    mime_msg.attach(part)
+                            except Exception as ie:
+                                log_message("[Notification] Error attaching image: {0}".format(ie))
+                            break
+
                 # Attach video file if available
                 if video_path and os.path.exists(video_path):
                     try:
@@ -603,7 +635,7 @@ def send_blast_notification(blast_type, confidence=None):
             except Exception as e:
                 log_message("[Notification] Error sending SMTP email: {0}".format(e))
 
-def log_blast(blast_type, confidence=None, model_name=None):
+def log_blast(blast_type, confidence=None, model_name=None, image_filename=None):
     import datetime
     now = datetime.datetime.now()
     duration = get_current_spray_duration()
@@ -625,7 +657,7 @@ def log_blast(blast_type, confidence=None, model_name=None):
         
         # Asynchronous notification dispatch
         import threading
-        threading.Thread(target=send_blast_notification, args=(blast_type, confidence)).start()
+        threading.Thread(target=send_blast_notification, args=(blast_type, confidence, image_filename)).start()
     except Exception as e:
         db_session.rollback()
         print("Error logging blast to DB:", e)
@@ -2449,6 +2481,27 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                 </div>
+
+                <div class="dash-row" style="margin-top: 1.5rem;">
+                    <div class="dash-panel">
+                        <div class="dash-panel-title">
+                            <span>System Health</span>
+                            <span id="health-status-pill" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">Checking...</span>
+                        </div>
+                        <div id="health-metrics-grid" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; font-size: 0.85rem;"></div>
+                    </div>
+                    <div class="dash-panel">
+                        <div class="dash-panel-title">
+                            <span>Camera Calibration</span>
+                            <span id="calibration-summary" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">ROI</span>
+                        </div>
+                        <div style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: #020617; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
+                            <img id="calibration-img" src="/api/latest_image?t=${Date.now()}" style="width: 100%; height: 100%; object-fit: cover;">
+                            <div id="calibration-roi-box" style="position: absolute; border: 2px solid #34d399; box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.35); display: none;"></div>
+                        </div>
+                        <div id="calibration-details" style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;"></div>
+                    </div>
+                </div>
             `;
             await updateDashboardData();
         }
@@ -2498,6 +2551,88 @@ HTML_TEMPLATE = """
             if (modalTimeEl) modalTimeEl.innerText = `Captured: ${formattedTime}`;
 
             return mtime;
+        }
+
+        function fmtMs(value) {
+            return value === undefined || value === null ? '--' : `${Number(value).toFixed(0)} ms`;
+        }
+
+        function fmtSeconds(value) {
+            return value === undefined || value === null ? '--' : `${Number(value).toFixed(1)}s`;
+        }
+
+        function fmtBytes(value) {
+            if (!value) return '--';
+            if (value >= 1048576) return `${(value / 1048576).toFixed(2)} MB`;
+            return `${(value / 1024).toFixed(0)} KB`;
+        }
+
+        function metricTile(label, value) {
+            return `<div style="background: rgba(15, 23, 42, 0.45); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.7rem;">
+                <div style="color: var(--text-secondary); font-size: 0.72rem; text-transform: uppercase;">${label}</div>
+                <div style="color: var(--text-primary); font-weight: 600; margin-top: 0.25rem;">${value}</div>
+            </div>`;
+        }
+
+        function applyRoiBox(roiString) {
+            const box = document.getElementById('calibration-roi-box');
+            if (!box || !roiString) {
+                if (box) box.style.display = 'none';
+                return;
+            }
+            const parts = roiString.split(',').map(v => parseFloat(v.trim()));
+            if (parts.length !== 4 || parts.some(v => Number.isNaN(v))) {
+                box.style.display = 'none';
+                return;
+            }
+            const [x, y, w, h] = parts;
+            box.style.display = 'block';
+            box.style.left = `${Math.max(0, Math.min(1, x)) * 100}%`;
+            box.style.top = `${Math.max(0, Math.min(1, y)) * 100}%`;
+            box.style.width = `${Math.max(0, Math.min(1, w)) * 100}%`;
+            box.style.height = `${Math.max(0, Math.min(1, h)) * 100}%`;
+        }
+
+        async function updateHealthPanel() {
+            try {
+                const res = await fetch('/api/health');
+                const health = await res.json();
+                const pi = health.pi || {};
+                const predict = health.predict || {};
+                const settings = health.settings || {};
+                const pill = document.getElementById('health-status-pill');
+                const grid = document.getElementById('health-metrics-grid');
+                const calImg = document.getElementById('calibration-img');
+                const calSummary = document.getElementById('calibration-summary');
+                const calDetails = document.getElementById('calibration-details');
+
+                if (pill) {
+                    const label = health.status === 'ok' ? 'OK' : health.status.toUpperCase();
+                    const color = health.status === 'ok' ? '#34d399' : '#f87171';
+                    pill.innerText = label;
+                    pill.style.color = color;
+                }
+                if (grid) {
+                    grid.innerHTML = [
+                        metricTile('Last Frame Age', fmtSeconds(health.latest_frame_age_seconds)),
+                        metricTile('Pi Loop', fmtMs(pi.total_ms)),
+                        metricTile('Capture', fmtMs(pi.capture_ms)),
+                        metricTile('Upload', fmtMs(pi.upload_ms)),
+                        metricTile('Model', fmtMs(predict.model_ms)),
+                        metricTile('Predict Total', fmtMs(predict.total_ms)),
+                        metricTile('Image Size', fmtBytes(pi.file_bytes || predict.input_bytes)),
+                        metricTile('Motion', pi.motion_score === undefined || pi.motion_score === null ? '--' : `${Number(pi.motion_score).toFixed(2)} / ${settings.motion_threshold}`)
+                    ].join('');
+                }
+                if (calImg) calImg.src = `/api/latest_image?t=${Date.now()}`;
+                if (calSummary) calSummary.innerText = `Still ROI ${settings.camera_roi || 'off'}`;
+                if (calDetails) {
+                    calDetails.innerHTML = `Live ${settings.analysis_width}x${settings.analysis_height} q${settings.analysis_jpeg_quality} · Review q${settings.review_jpeg_quality}<br>Motion prefilter ${settings.motion_prefilter_enabled ? 'on' : 'off'} · force every ${settings.motion_force_interval}s · last confidence ${predict.confidence !== undefined ? (predict.confidence * 100).toFixed(1) + '%' : '--'}`;
+                }
+                applyRoiBox(settings.camera_roi);
+            } catch (e) {
+                console.error("Error updating health panel:", e);
+            }
         }
 
         async function updateDashboardData() {
@@ -2600,6 +2735,7 @@ HTML_TEMPLATE = """
                 }
 
                 renderBlastsChart(blastsData.blasts, blastsData.missed_squirrels || []);
+                await updateHealthPanel();
                 refreshDashboardSnapshot();
             } catch (e) {
                 console.error("Error updating dashboard data:", e);
@@ -2761,6 +2897,42 @@ HTML_TEMPLATE = """
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review Save Interval (seconds)</label>
                         <input type="number" id="settings-save-interval" min="5" max="3600" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">How often normal analysis frames are saved for review/classification. Default: 30s.</span>
+                    </div>
+
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Capture Quality & Motion</h3>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live Width</label>
+                                <input type="number" id="settings-analysis-width" min="320" max="1920" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live Height</label>
+                                <input type="number" id="settings-analysis-height" min="240" max="1440" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live JPEG Quality</label>
+                                <input type="number" id="settings-analysis-quality" min="30" max="95" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review JPEG Quality</label>
+                                <input type="number" id="settings-review-quality" min="50" max="100" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <input type="checkbox" id="settings-motion-enabled" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
+                            <label for="settings-motion-enabled" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable Motion Prefilter</label>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Motion Threshold</label>
+                                <input type="number" id="settings-motion-threshold" min="1" max="40" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Force Analysis Every (seconds)</label>
+                                <input type="number" id="settings-motion-force" min="5" max="600" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                        </div>
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
@@ -3052,6 +3224,13 @@ HTML_TEMPLATE = """
                 if (data.status === 'success') {
                     document.getElementById('settings-analysis-interval').value = data.settings.analysis_interval || data.settings.capture_interval || 5;
                     document.getElementById('settings-save-interval').value = data.settings.save_interval || 30;
+                    document.getElementById('settings-analysis-width').value = data.settings.analysis_width || 960;
+                    document.getElementById('settings-analysis-height').value = data.settings.analysis_height || 720;
+                    document.getElementById('settings-analysis-quality').value = data.settings.analysis_jpeg_quality || 65;
+                    document.getElementById('settings-review-quality').value = data.settings.review_jpeg_quality || 90;
+                    document.getElementById('settings-motion-enabled').checked = data.settings.motion_prefilter_enabled !== false;
+                    document.getElementById('settings-motion-threshold').value = data.settings.motion_threshold || 6.0;
+                    document.getElementById('settings-motion-force').value = data.settings.motion_force_interval || 30;
                     document.getElementById('settings-gemini-key').value = data.settings.gemini_api_key;
                     document.getElementById('settings-rotation').value = data.settings.camera_rotation;
                     document.getElementById('settings-roi').value = data.settings.camera_roi;
@@ -3116,6 +3295,13 @@ HTML_TEMPLATE = """
             const analysis_interval = parseInt(document.getElementById('settings-analysis-interval').value);
             const save_interval = parseInt(document.getElementById('settings-save-interval').value);
             const capture_interval = analysis_interval;
+            const analysis_width = parseInt(document.getElementById('settings-analysis-width').value);
+            const analysis_height = parseInt(document.getElementById('settings-analysis-height').value);
+            const analysis_jpeg_quality = parseInt(document.getElementById('settings-analysis-quality').value);
+            const review_jpeg_quality = parseInt(document.getElementById('settings-review-quality').value);
+            const motion_prefilter_enabled = document.getElementById('settings-motion-enabled').checked;
+            const motion_threshold = parseFloat(document.getElementById('settings-motion-threshold').value);
+            const motion_force_interval = parseInt(document.getElementById('settings-motion-force').value);
             const gemini_api_key = document.getElementById('settings-gemini-key').value;
             const camera_rotation = parseInt(document.getElementById('settings-rotation').value);
             const camera_roi = document.getElementById('settings-roi').value;
@@ -3148,6 +3334,13 @@ HTML_TEMPLATE = """
                         capture_interval,
                         analysis_interval,
                         save_interval,
+                        analysis_width,
+                        analysis_height,
+                        analysis_jpeg_quality,
+                        review_jpeg_quality,
+                        motion_prefilter_enabled,
+                        motion_threshold,
+                        motion_force_interval,
                         gemini_api_key,
                         camera_rotation,
                         camera_roi,
@@ -4923,7 +5116,9 @@ def api_settings():
         try:
             for k in default_settings.keys():
                 if k in data:
-                    if isinstance(default_settings[k], int):
+                    if isinstance(default_settings[k], bool):
+                        settings[k] = setting_enabled(data[k])
+                    elif isinstance(default_settings[k], int):
                         settings[k] = int(data[k])
                     elif isinstance(default_settings[k], float):
                         settings[k] = float(data[k])
@@ -5409,6 +5604,58 @@ def get_automation_status():
     global automation_enabled
     return jsonify({'enabled': automation_enabled})
 
+@app.route('/api/pi_status', methods=['POST'])
+def pi_status():
+    global latest_pi_status
+    data = request.get_json(silent=True) or {}
+    data['received_at'] = time.time()
+    with telemetry_lock:
+        latest_pi_status = data
+    return jsonify({'status': 'success'})
+
+@app.route('/api/health')
+def api_health():
+    settings = load_settings()
+    with telemetry_lock:
+        pi_status_copy = dict(latest_pi_status)
+        predict_metrics_copy = dict(latest_predict_metrics)
+    with frame_lock:
+        frame_age = time.time() - latest_frame_time if latest_frame_time else None
+        latest_frame_size = len(latest_frame_jpeg) if latest_frame_jpeg else 0
+
+    status = 'ok'
+    if frame_age is None or frame_age > 300:
+        status = 'offline'
+    elif frame_age > max(60, int(settings.get('analysis_interval', 5)) * 4):
+        status = 'stale'
+
+    return jsonify({
+        'status': status,
+        'automation_enabled': automation_enabled,
+        'active_model': active_model_name,
+        'active_model_type': active_model_type,
+        'latest_frame_age_seconds': frame_age,
+        'latest_frame_size_bytes': latest_frame_size,
+        'last_spray_age_seconds': time.time() - last_spray_time if last_spray_time else None,
+        'pi': pi_status_copy,
+        'predict': predict_metrics_copy,
+        'settings': {
+            'analysis_interval': settings.get('analysis_interval'),
+            'save_interval': settings.get('save_interval'),
+            'analysis_width': settings.get('analysis_width'),
+            'analysis_height': settings.get('analysis_height'),
+            'analysis_jpeg_quality': settings.get('analysis_jpeg_quality'),
+            'review_jpeg_quality': settings.get('review_jpeg_quality'),
+            'motion_prefilter_enabled': settings.get('motion_prefilter_enabled'),
+            'motion_threshold': settings.get('motion_threshold'),
+            'motion_force_interval': settings.get('motion_force_interval'),
+            'camera_roi': settings.get('camera_roi'),
+            'video_roi': settings.get('video_roi'),
+            'camera_rotation': settings.get('camera_rotation'),
+            'confidence_threshold': settings.get('confidence_threshold')
+        }
+    })
+
 @app.route('/api/toggle_automation', methods=['POST'])
 def toggle_automation():
     global automation_enabled
@@ -5541,7 +5788,8 @@ def upload_video():
 @app.route('/api/predict', methods=['POST'])
 def predict():
     global automation_enabled, last_spray_time
-    global latest_frame_jpeg, latest_frame_time
+    global latest_frame_jpeg, latest_frame_time, latest_predict_metrics
+    request_started_at = time.time()
     img_data = request.data
     if not img_data:
         return jsonify({'status': 'error', 'message': 'No image data received'}), 400
@@ -5556,15 +5804,21 @@ def predict():
     temp_filename = "_temp_predict_{0}.jpg".format(now_dt.strftime("%Y%m%d_%H%M%S_%f"))
     filepath = os.path.join(RAW_DIR, filename) if save_requested else os.path.join(PREDICT_TMP_DIR, temp_filename)
     
+    write_started_at = time.time()
     with open(filepath, 'wb') as f:
         f.write(img_data)
+    write_ms = (time.time() - write_started_at) * 1000
 
+    normalize_started_at = time.time()
     live_frame_jpeg = make_live_frame_jpeg(img_data, settings)
+    normalize_ms = (time.time() - normalize_started_at) * 1000
     with frame_lock:
         latest_frame_jpeg = live_frame_jpeg
         latest_frame_time = time.time()
-        
+
+    predict_started_at = time.time()
     is_squirrel, confidence = model_predict(filepath)
+    model_ms = (time.time() - predict_started_at) * 1000
             
     current_time = time.time()
     threshold = float(settings.get('confidence_threshold', 0.70))
@@ -5581,6 +5835,7 @@ def predict():
     should_save_image = save_requested or response_is_squirrel
     db_img = None
 
+    save_started_at = time.time()
     if should_save_image:
         try:
             db_img = db_session.query(DBImage).filter_by(filename=filename).first()
@@ -5632,12 +5887,13 @@ def predict():
                 os.remove(filepath)
         except Exception as e:
             print("Error removing unsaved prediction temp file:", e)
+    save_ms = (time.time() - save_started_at) * 1000
         
     duration = get_current_spray_duration()
     
     if response_is_squirrel:
         if not is_test:
-            log_blast('auto', confidence, active_model_name)
+            log_blast('auto', confidence, active_model_name, filename if should_save_image else None)
             last_spray_time = current_time
             log_message("[Cooldown] Solenoid triggered. Cooldown activated for {0}s.".format(cooldown))
     elif is_squirrel and automation_enabled:
@@ -5650,11 +5906,32 @@ def predict():
                 cooldown - (current_time - last_spray_time)
             ))
         
+    total_ms = (time.time() - request_started_at) * 1000
+    metrics = {
+        'received_at': time.time(),
+        'filename': filename if should_save_image else None,
+        'input_bytes': len(img_data),
+        'live_bytes': len(live_frame_jpeg) if live_frame_jpeg else 0,
+        'save_requested': save_requested,
+        'saved': should_save_image,
+        'is_squirrel_raw': is_squirrel,
+        'is_squirrel_response': response_is_squirrel,
+        'confidence': confidence,
+        'write_ms': round(write_ms, 1),
+        'normalize_ms': round(normalize_ms, 1),
+        'model_ms': round(model_ms, 1),
+        'save_ms': round(save_ms, 1),
+        'total_ms': round(total_ms, 1)
+    }
+    with telemetry_lock:
+        latest_predict_metrics = metrics
+
     return jsonify({
         'is_squirrel': response_is_squirrel,
         'confidence': confidence,
         'filename': filename if should_save_image else None,
         'saved': should_save_image,
+        'metrics': metrics,
         'automation_enabled': automation_enabled,
         'spray_duration': duration
     })

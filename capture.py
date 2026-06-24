@@ -7,6 +7,7 @@ import os
 import time
 import datetime
 import subprocess
+import json
 
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30
@@ -21,6 +22,9 @@ ANALYSIS_WIDTH = 960
 ANALYSIS_HEIGHT = 720
 ANALYSIS_JPEG_QUALITY = 65
 REVIEW_JPEG_QUALITY = 90
+MOTION_PREFILTER_ENABLED = True
+MOTION_THRESHOLD = 6.0
+MOTION_FORCE_INTERVAL_SECONDS = 30
 RASPISTILL_TIMEOUT_SECONDS = 20
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 MAC_IP = '192.168.86.137'
@@ -30,6 +34,8 @@ if not os.path.exists(OUTPUT_DIR):
 
 CONFIDENCE_THRESHOLD = 0.70
 last_review_save_time = 0.0
+last_analysis_sent_time = 0.0
+last_motion_fingerprint = None
 
 def is_dst_eastern(dt):
     try:
@@ -61,8 +67,8 @@ def is_daylight(dt):
 def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
+    global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
     import urllib.request
-    import json
 
     url = "http://{0}:5001/api/settings".format(MAC_IP)
     try:
@@ -93,10 +99,21 @@ def fetch_config_from_mac():
                     ANALYSIS_JPEG_QUALITY = int(settings['analysis_jpeg_quality'])
                 if 'review_jpeg_quality' in settings:
                     REVIEW_JPEG_QUALITY = int(settings['review_jpeg_quality'])
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Rotation={8}, ROI={9}, VideoROI={10}, Threshold={11:.2f}".format(
+                if 'motion_prefilter_enabled' in settings:
+                    value = settings['motion_prefilter_enabled']
+                    if isinstance(value, str):
+                        MOTION_PREFILTER_ENABLED = value.strip().lower() in ('1', 'true', 'yes', 'on')
+                    else:
+                        MOTION_PREFILTER_ENABLED = bool(value)
+                if 'motion_threshold' in settings:
+                    MOTION_THRESHOLD = float(settings['motion_threshold'])
+                if 'motion_force_interval' in settings:
+                    MOTION_FORCE_INTERVAL_SECONDS = int(settings['motion_force_interval'])
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoROI={13}, Threshold={14:.2f}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     WIDTH, HEIGHT, REVIEW_JPEG_QUALITY,
+                    MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
                     ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
                 ))
     except Exception as e:
@@ -112,6 +129,7 @@ def check_for_squirrel(filepath, should_save=True, is_test=False):
         url += "&test=true"
     print("[Inference] Sending {0} to Mac predict API... (save={1})".format(os.path.basename(filepath), save_flag))
 
+    started_at = time.time()
     try:
         with open(filepath, 'rb') as f:
             img_data = f.read()
@@ -123,10 +141,50 @@ def check_for_squirrel(filepath, should_save=True, is_test=False):
         )
         with urllib.request.urlopen(req, timeout=15) as response:
             res_json = json.loads(response.read().decode('utf-8'))
-            return res_json.get('is_squirrel', False), res_json.get('confidence', 0.0), res_json.get('spray_duration', 3.0)
+            res_json['_upload_ms'] = round((time.time() - started_at) * 1000, 1)
+            return res_json
     except Exception as e:
         print("[Inference] Mac server offline or unreachable: {0}".format(e))
-        return False, 0.0, 3.0
+        return {
+            'is_squirrel': False,
+            'confidence': 0.0,
+            'spray_duration': 3.0,
+            '_upload_ms': round((time.time() - started_at) * 1000, 1),
+            'error': str(e)
+        }
+
+def report_pi_status(status):
+    import urllib.request
+
+    try:
+        url = "http://{0}:5001/api/pi_status".format(MAC_IP)
+        payload = json.dumps(status).encode('utf-8')
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=2) as response:
+            response.read()
+    except Exception as e:
+        print("[Status] Could not report Pi status: {0}".format(e))
+
+def get_motion_score(filepath):
+    global last_motion_fingerprint
+    try:
+        from PIL import Image
+        img = Image.open(filepath).convert('L').resize((32, 24))
+        pixels = list(img.getdata())
+        if last_motion_fingerprint is None:
+            last_motion_fingerprint = pixels
+            return None
+        diff = sum(abs(a - b) for a, b in zip(pixels, last_motion_fingerprint)) / float(len(pixels))
+        last_motion_fingerprint = pixels
+        return diff
+    except Exception as e:
+        print("[Motion] Could not compute motion score: {0}".format(e))
+        return None
 
 def trigger_spray_locally(duration):
     import urllib.request
@@ -149,9 +207,12 @@ def remove_if_exists(filepath):
         print("[Cleanup] Error removing {0}: {1}".format(filepath, e))
 
 def capture_image():
-    global last_review_save_time
+    global last_review_save_time, last_analysis_sent_time
 
+    loop_started_at = time.time()
+    fetch_started_at = time.time()
     fetch_config_from_mac()
+    config_ms = (time.time() - fetch_started_at) * 1000
     local_time = get_eastern_time()
     now_seconds = time.time()
     should_save = (last_review_save_time <= 0.0) or (now_seconds - last_review_save_time >= SAVE_INTERVAL_SECONDS)
@@ -185,8 +246,47 @@ def capture_image():
     ))
 
     try:
+        capture_started_at = time.time()
         subprocess.check_call(cmd, timeout=RASPISTILL_TIMEOUT_SECONDS)
-        is_squirrel, confidence, spray_duration = check_for_squirrel(filepath, should_save=should_save)
+        capture_ms = (time.time() - capture_started_at) * 1000
+        file_bytes = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+        motion_started_at = time.time()
+        motion_score = get_motion_score(filepath)
+        motion_ms = (time.time() - motion_started_at) * 1000
+        force_analysis = (last_analysis_sent_time <= 0.0) or (now_seconds - last_analysis_sent_time >= MOTION_FORCE_INTERVAL_SECONDS)
+        motion_allowed = (
+            should_save or
+            not MOTION_PREFILTER_ENABLED or
+            force_analysis or
+            motion_score is None or
+            motion_score >= MOTION_THRESHOLD
+        )
+
+        if not motion_allowed:
+            print("[Motion] Skipping inference. score={0:.2f}, threshold={1:.2f}".format(motion_score, MOTION_THRESHOLD))
+            report_pi_status({
+                'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
+                'status': 'motion_skipped',
+                'filename': filename,
+                'should_save': should_save,
+                'file_bytes': file_bytes,
+                'motion_score': motion_score,
+                'motion_threshold': MOTION_THRESHOLD,
+                'config_ms': round(config_ms, 1),
+                'capture_ms': round(capture_ms, 1),
+                'motion_ms': round(motion_ms, 1),
+                'total_ms': round((time.time() - loop_started_at) * 1000, 1),
+                'analysis_interval': ANALYSIS_INTERVAL_SECONDS,
+                'save_interval': SAVE_INTERVAL_SECONDS
+            })
+            remove_if_exists(filepath)
+            return
+
+        result = check_for_squirrel(filepath, should_save=should_save)
+        last_analysis_sent_time = now_seconds
+        is_squirrel = result.get('is_squirrel', False)
+        confidence = result.get('confidence', 0.0)
+        spray_duration = result.get('spray_duration', 3.0)
         if is_squirrel and confidence > CONFIDENCE_THRESHOLD:
             print("[Inference] SQUIRREL DETECTED! Confidence: {0:.1f}%. Triggering spray for {1}s.".format(confidence * 100, spray_duration))
             trigger_spray_locally(spray_duration)
@@ -201,6 +301,29 @@ def capture_image():
         elif not should_save:
             remove_if_exists(filepath)
             print("[Cleanup] Removed unsaved local image after failed transient prediction.")
+        report_pi_status({
+            'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
+            'status': 'analyzed',
+            'filename': filename,
+            'should_save': should_save,
+            'saved_for_review': should_save and confidence > 0.0,
+            'file_bytes': file_bytes,
+            'width': capture_width,
+            'height': capture_height,
+            'jpeg_quality': jpeg_quality,
+            'motion_score': motion_score,
+            'motion_threshold': MOTION_THRESHOLD,
+            'is_squirrel': is_squirrel,
+            'confidence': confidence,
+            'config_ms': round(config_ms, 1),
+            'capture_ms': round(capture_ms, 1),
+            'motion_ms': round(motion_ms, 1),
+            'upload_ms': result.get('_upload_ms'),
+            'server_metrics': result.get('metrics', {}),
+            'total_ms': round((time.time() - loop_started_at) * 1000, 1),
+            'analysis_interval': ANALYSIS_INTERVAL_SECONDS,
+            'save_interval': SAVE_INTERVAL_SECONDS
+        })
     except subprocess.TimeoutExpired as e:
         remove_if_exists(filepath)
         print("Error capturing image: raspistill timed out after {0}s".format(RASPISTILL_TIMEOUT_SECONDS))
