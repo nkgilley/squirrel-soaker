@@ -2482,24 +2482,13 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <div class="dash-row" style="margin-top: 1.5rem;">
-                    <div class="dash-panel">
+                <div style="margin-top: 1.5rem;">
+                    <div class="dash-panel" style="min-height: 0;">
                         <div class="dash-panel-title">
                             <span>System Health</span>
                             <span id="health-status-pill" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">Checking...</span>
                         </div>
                         <div id="health-metrics-grid" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; font-size: 0.85rem;"></div>
-                    </div>
-                    <div class="dash-panel">
-                        <div class="dash-panel-title">
-                            <span>Camera Calibration</span>
-                            <span id="calibration-summary" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">ROI</span>
-                        </div>
-                        <div style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: #020617; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
-                            <img id="calibration-img" src="/api/latest_image?t=${Date.now()}" style="width: 100%; height: 100%; object-fit: cover;">
-                            <div id="calibration-roi-box" style="position: absolute; border: 2px solid #34d399; box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.35); display: none;"></div>
-                        </div>
-                        <div id="calibration-details" style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;"></div>
                     </div>
                 </div>
             `;
@@ -2575,7 +2564,7 @@ HTML_TEMPLATE = """
         }
 
         function applyRoiBox(roiString) {
-            const box = document.getElementById('calibration-roi-box');
+            const box = document.getElementById('settings-calibration-roi-box');
             if (!box || !roiString) {
                 if (box) box.style.display = 'none';
                 return;
@@ -2593,6 +2582,23 @@ HTML_TEMPLATE = """
             box.style.height = `${Math.max(0, Math.min(1, h)) * 100}%`;
         }
 
+        function updateSettingsCalibration(settings = null) {
+            const roiInput = document.getElementById('settings-roi');
+            const roi = roiInput ? roiInput.value.trim() : (settings && settings.camera_roi) || '';
+            const img = document.getElementById('settings-calibration-img');
+            const details = document.getElementById('settings-calibration-details');
+
+            if (img) img.src = `/api/latest_image?t=${Date.now()}`;
+            applyRoiBox(roi);
+
+            if (details) {
+                const analysisWidth = settings ? settings.analysis_width : document.getElementById('settings-analysis-width')?.value;
+                const analysisHeight = settings ? settings.analysis_height : document.getElementById('settings-analysis-height')?.value;
+                const quality = settings ? settings.analysis_jpeg_quality : document.getElementById('settings-analysis-quality')?.value;
+                details.innerHTML = `Still ROI: ${roi || 'off'}<br>The latest captured output is already zoomed by raspistill. The green box is drawn on the full-frame map to show the source region being cropped before capture.<br>Live output: ${analysisWidth || '--'}x${analysisHeight || '--'} q${quality || '--'}`;
+            }
+        }
+
         async function updateHealthPanel() {
             try {
                 const res = await fetch('/api/health');
@@ -2602,9 +2608,6 @@ HTML_TEMPLATE = """
                 const settings = health.settings || {};
                 const pill = document.getElementById('health-status-pill');
                 const grid = document.getElementById('health-metrics-grid');
-                const calImg = document.getElementById('calibration-img');
-                const calSummary = document.getElementById('calibration-summary');
-                const calDetails = document.getElementById('calibration-details');
 
                 if (pill) {
                     const label = health.status === 'ok' ? 'OK' : health.status.toUpperCase();
@@ -2624,12 +2627,6 @@ HTML_TEMPLATE = """
                         metricTile('Motion', pi.motion_score === undefined || pi.motion_score === null ? '--' : `${Number(pi.motion_score).toFixed(2)} / ${settings.motion_threshold}`)
                     ].join('');
                 }
-                if (calImg) calImg.src = `/api/latest_image?t=${Date.now()}`;
-                if (calSummary) calSummary.innerText = `Still ROI ${settings.camera_roi || 'off'}`;
-                if (calDetails) {
-                    calDetails.innerHTML = `Live ${settings.analysis_width}x${settings.analysis_height} q${settings.analysis_jpeg_quality} · Review q${settings.review_jpeg_quality}<br>Motion prefilter ${settings.motion_prefilter_enabled ? 'on' : 'off'} · force every ${settings.motion_force_interval}s · last confidence ${predict.confidence !== undefined ? (predict.confidence * 100).toFixed(1) + '%' : '--'}`;
-                }
-                applyRoiBox(settings.camera_roi);
             } catch (e) {
                 console.error("Error updating health panel:", e);
             }
@@ -2964,6 +2961,25 @@ HTML_TEMPLATE = """
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for video recordings. Set empty to disable.</span>
                     </div>
 
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Calibration</h3>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem;">
+                            <div>
+                                <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.45rem;">Latest captured output</div>
+                                <div style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: #020617; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
+                                    <img id="settings-calibration-img" src="/api/latest_image?t=${Date.now()}" style="width: 100%; height: 100%; object-fit: cover;">
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.45rem;">Full camera frame ROI map</div>
+                                <div id="settings-roi-map" style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px), linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px), #020617; background-size: 25% 25%; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
+                                    <div id="settings-calibration-roi-box" style="position: absolute; border: 2px solid #34d399; background: rgba(52, 211, 153, 0.12); box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.28); display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-calibration-details" style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;"></div>
+                    </div>
+
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">SQUIRREL Detection Confidence Threshold</label>
                         <input type="number" id="settings-confidence" min="0.50" max="0.99" step="0.05" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
@@ -3274,6 +3290,12 @@ HTML_TEMPLATE = """
                     // Render model accuracies
                     if (data.model_accuracies) {
                         renderAccuraciesTable(data.model_accuracies);
+                    }
+                    updateSettingsCalibration(data.settings);
+                    const roiInput = document.getElementById('settings-roi');
+                    if (roiInput && !roiInput.dataset.calibrationBound) {
+                        roiInput.addEventListener('input', () => updateSettingsCalibration(data.settings));
+                        roiInput.dataset.calibrationBound = 'true';
                     }
                 }
             } catch (e) {
