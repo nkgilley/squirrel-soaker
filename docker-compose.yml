@@ -12,4 +12,6 @@ services:
       - ./data:/app/data
       # Optionally mount model.pth to persist model updates
       - ./model.pth:/app/model.pth
+    environment:
+      - TZ=America/New_York
     restart: unless-stopped

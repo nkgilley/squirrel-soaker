@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader, random_split
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def train_model():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +28,10 @@ def train_model():
         transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(15),
-        transforms.ColorJitter(brightness=0.1, contrast=0.1),
+        # Stronger brightness, contrast, saturation, and hue variations to ignore sun position/lighting shifts
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
+        # Randomly convert images to grayscale (20% chance) to reduce color dependency
+        transforms.RandomGrayscale(p=0.2),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])

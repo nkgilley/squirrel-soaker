@@ -5,6 +5,8 @@
 import os
 import shutil
 import PIL.Image
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 from dotenv import load_dotenv
 from google import genai
 from google.genai.errors import APIError
