@@ -1844,6 +1844,24 @@ HTML_TEMPLATE = """
             box-shadow: 0 0 8px var(--color-not-squirrel);
             animation: pulse 1.5s infinite;
         }
+        .health-layout {
+            display: grid;
+            grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr);
+            gap: 1.25rem;
+            align-items: stretch;
+            min-height: 260px;
+        }
+        .health-metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+            align-content: start;
+            font-size: 0.85rem;
+        }
+        .health-chart-wrap {
+            min-height: 260px;
+            position: relative;
+        }
         @media (max-width: 900px) {
             .dash-grid {
                 grid-template-columns: 1fr;
@@ -1852,6 +1870,9 @@ HTML_TEMPLATE = """
             .dash-row {
                 grid-template-columns: 1fr;
                 gap: 1.5rem;
+            }
+            .health-layout {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -2508,14 +2529,14 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <div style="margin-top: 1.5rem;">
-                    <div class="dash-panel" style="min-height: 0;">
-                        <div class="dash-panel-title">
-                            <span>System Health</span>
-                            <span id="health-status-pill" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">Checking...</span>
-                        </div>
-                        <div id="health-metrics-grid" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; font-size: 0.85rem;"></div>
-                        <div style="height: 260px; margin-top: 1rem; position: relative;">
+                <div class="dash-panel" style="min-height: 0; margin-top: 1.5rem;">
+                    <div class="dash-panel-title">
+                        <span>System Health</span>
+                        <span id="health-status-pill" style="font-size: 0.8rem; color: var(--text-secondary); font-weight: normal;">Checking...</span>
+                    </div>
+                    <div class="health-layout">
+                        <div id="health-metrics-grid" class="health-metrics-grid"></div>
+                        <div class="health-chart-wrap">
                             <canvas id="health-chart"></canvas>
                         </div>
                     </div>
