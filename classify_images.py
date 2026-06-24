@@ -391,6 +391,10 @@ default_settings = {
     'capture_interval': 5,
     'analysis_interval': 5,
     'save_interval': 30,
+    'analysis_width': 960,
+    'analysis_height': 720,
+    'analysis_jpeg_quality': 65,
+    'review_jpeg_quality': 90,
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
     'camera_rotation': 0,
     'camera_roi': '0.05,0.15,0.3,0.3',
@@ -447,6 +451,28 @@ def save_settings(settings):
             json.dump(settings, f, indent=2)
     except Exception as e:
         print("Error saving settings:", e)
+
+def make_live_frame_jpeg(img_data, settings=None):
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        settings = settings or load_settings()
+        live_width = int(settings.get('analysis_width', default_settings['analysis_width']))
+        live_height = int(settings.get('analysis_height', default_settings['analysis_height']))
+        live_quality = int(settings.get('analysis_jpeg_quality', default_settings['analysis_jpeg_quality']))
+
+        img = Image.open(BytesIO(img_data)).convert('RGB')
+        if img.size != (live_width, live_height):
+            img = img.resize((live_width, live_height), Image.LANCZOS)
+
+        out = BytesIO()
+        img.save(out, format='JPEG', quality=live_quality, optimize=True)
+        return out.getvalue()
+    except Exception as e:
+        print("Error normalizing live frame:", e)
+        return img_data
+
 BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
 last_spray_time = 0.0
 
@@ -5522,6 +5548,7 @@ def predict():
         
     is_test = request.args.get('test') == 'true'
     save_requested = setting_enabled(request.args.get('save', 'true'))
+    settings = load_settings()
     
     import datetime
     now_dt = datetime.datetime.now()
@@ -5532,14 +5559,14 @@ def predict():
     with open(filepath, 'wb') as f:
         f.write(img_data)
 
+    live_frame_jpeg = make_live_frame_jpeg(img_data, settings)
     with frame_lock:
-        latest_frame_jpeg = img_data
+        latest_frame_jpeg = live_frame_jpeg
         latest_frame_time = time.time()
         
     is_squirrel, confidence = model_predict(filepath)
             
     current_time = time.time()
-    settings = load_settings()
     threshold = float(settings.get('confidence_threshold', 0.70))
     cooldown = float(settings.get('spray_cooldown_seconds', 60))
     cooldown_active = (current_time - last_spray_time < cooldown)
