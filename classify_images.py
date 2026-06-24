@@ -373,6 +373,7 @@ load_env_file()
 
 # --- Configuration ---
 PI_IP = os.environ.get('PI_IP', '192.168.86.136')
+PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'http://192.168.86.137')
 DEFAULT_STREAM_URL = os.environ.get('STREAM_URL', 'http://{0}:8554/stream.mjpg'.format(PI_IP))
 
 RAW_DIR = os.path.join(BASE_DIR, 'data', 'raw')
@@ -406,6 +407,7 @@ default_settings = {
     'confidence_threshold': 0.70,
     'spray_cooldown_seconds': 60,
     'notification_type': 'join',
+    'public_base_url': PUBLIC_BASE_URL,
     'email_smtp_server': '192.169.86.113:25',
     'email_to': '',
     'join_api_key': os.environ.get('JOIN_API_KEY', ''),
@@ -504,6 +506,11 @@ def add_health_sample(source, pi=None, predict=None):
     health_history.append(sample)
 
 def get_local_base_url():
+    settings = load_settings()
+    configured_url = str(settings.get('public_base_url') or '').strip()
+    if configured_url:
+        return configured_url.rstrip('/')
+
     import socket
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

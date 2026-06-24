@@ -105,6 +105,7 @@ The included `docker-compose.yml` maps:
 - `5001:5001` for the web app.
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for persistent model weights.
+- `PUBLIC_BASE_URL=http://192.168.86.137` so notification links use the LAN address instead of Docker's internal bridge IP.
 
 ---
 
