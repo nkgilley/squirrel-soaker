@@ -9,6 +9,7 @@ import time
 import datetime
 import subprocess
 import threading
+import shutil
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 try:
@@ -22,6 +23,7 @@ SOLENOID_PIN = 17
 DEFAULT_SPRAY_DURATION = 3.0
 MAC_IP = '192.168.86.137'
 CAPTURES_DIR = os.path.expanduser('~/squirrel_soaker/captures')
+VIDEO_TMP_DIR = '/dev/shm/squirrel_soaker'
 BACKLOG_MIN_AGE_SECONDS = 45
 sync_lock = threading.Lock()
 
@@ -40,16 +42,21 @@ def get_local_time_and_defaults():
         default_roi = None
     return local_time, default_rot, default_roi
 
+def ensure_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
+
 def record_video(duration_ms=5000, rotation=None, roi=None):
+    import urllib.parse
+
     local_time, default_rot, default_roi = get_local_time_and_defaults()
     rot = rotation if rotation is not None else default_rot
     selected_roi = roi if roi is not None else default_roi
 
-    if not os.path.exists(CAPTURES_DIR):
-        os.makedirs(CAPTURES_DIR)
+    ensure_dir(VIDEO_TMP_DIR)
 
     filename = "vid_{0}.h264".format(local_time.strftime("%Y%m%d_%H%M%S"))
-    filepath = os.path.join(CAPTURES_DIR, filename)
+    filepath = os.path.join(VIDEO_TMP_DIR, filename)
 
     cmd = ["raspivid", "-t", str(duration_ms), "-w", "1280", "-h", "720", "-o", filepath]
     if rot in [90, 180, 270]:
@@ -57,15 +64,37 @@ def record_video(duration_ms=5000, rotation=None, roi=None):
     if selected_roi:
         cmd.extend(["-roi", selected_roi])
 
-    print("[Video] Recording {0}s video to {1}... (rotation={2}, roi={3})".format(duration_ms / 1000.0, filepath, rot, selected_roi))
+    print("[Video] Recording {0}s video to RAM at {1}... (rotation={2}, roi={3})".format(duration_ms / 1000.0, filepath, rot, selected_roi))
     try:
         timeout_seconds = int(duration_ms / 1000.0) + 10
         subprocess.check_call(cmd, timeout=timeout_seconds)
-        print("[Video] Finished recording: {0}".format(filepath))
+        print("[Video] Finished recording in RAM: {0}".format(filepath))
+
+        encoded = urllib.parse.quote(filename)
+        url = "http://{0}:5001/api/upload_video?filename={1}".format(MAC_IP, encoded)
+        try:
+            post_file(url, filepath, 'video/h264', timeout=30)
+            os.remove(filepath)
+            print("[Video] Uploaded {0} from RAM and removed local copy.".format(filename))
+        except Exception as e:
+            ensure_dir(CAPTURES_DIR)
+            backlog_path = os.path.join(CAPTURES_DIR, filename)
+            shutil.move(filepath, backlog_path)
+            print("[Video] Upload failed ({0}); saved video to SD backlog: {1}".format(e, backlog_path))
     except subprocess.TimeoutExpired:
         print("[Video] Error recording video: raspivid timed out after {0}s".format(timeout_seconds))
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception:
+            pass
     except Exception as e:
         print("[Video] Error recording video: {0}".format(e))
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception:
+            pass
 
 def post_file(url, filepath, content_type, timeout=20):
     import urllib.request
@@ -90,7 +119,8 @@ def sync_backlog():
 
     try:
         if not os.path.exists(CAPTURES_DIR):
-            os.makedirs(CAPTURES_DIR)
+            print("[Sync] No SD backlog directory found; nothing to sync.")
+            return
 
         uploaded = 0
         failed = 0

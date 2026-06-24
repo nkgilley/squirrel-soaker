@@ -29,9 +29,6 @@ RASPISTILL_TIMEOUT_SECONDS = 20
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 MAC_IP = '192.168.86.137'
 
-if not os.path.exists(OUTPUT_DIR):
-    os.makedirs(OUTPUT_DIR)
-
 CONFIDENCE_THRESHOLD = 0.70
 last_review_save_time = 0.0
 last_analysis_sent_time = 0.0
@@ -119,20 +116,21 @@ def fetch_config_from_mac():
     except Exception as e:
         print("[Config] Could not sync dynamic settings from Mac: {0}".format(e))
 
-def check_for_squirrel(filepath, should_save=True, is_test=False):
+def ensure_output_dir():
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+def check_for_squirrel(filename, img_data, should_save=True, is_test=False):
     import urllib.request
-    import json
 
     save_flag = '1' if should_save else '0'
     url = "http://{0}:5001/api/predict?save={1}".format(MAC_IP, save_flag)
     if is_test:
         url += "&test=true"
-    print("[Inference] Sending {0} to Mac predict API... (save={1})".format(os.path.basename(filepath), save_flag))
+    print("[Inference] Sending {0} to Mac predict API from memory... (save={1})".format(filename, save_flag))
 
     started_at = time.time()
     try:
-        with open(filepath, 'rb') as f:
-            img_data = f.read()
         req = urllib.request.Request(
             url,
             data=img_data,
@@ -170,11 +168,12 @@ def report_pi_status(status):
     except Exception as e:
         print("[Status] Could not report Pi status: {0}".format(e))
 
-def get_motion_score(filepath):
+def get_motion_score(img_data):
     global last_motion_fingerprint
     try:
+        from io import BytesIO
         from PIL import Image
-        img = Image.open(filepath).convert('L').resize((32, 24))
+        img = Image.open(BytesIO(img_data)).convert('L').resize((32, 24))
         pixels = list(img.getdata())
         if last_motion_fingerprint is None:
             last_motion_fingerprint = pixels
@@ -185,6 +184,28 @@ def get_motion_score(filepath):
     except Exception as e:
         print("[Motion] Could not compute motion score: {0}".format(e))
         return None
+
+def capture_jpeg_bytes(cmd):
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout_data, stderr_data = proc.communicate(timeout=RASPISTILL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+
+    if proc.returncode != 0:
+        err = stderr_data.decode('utf-8', errors='ignore') if stderr_data else ''
+        raise subprocess.CalledProcessError(proc.returncode, cmd, output=err)
+    return stdout_data
+
+def write_backlog_image(filename, img_data):
+    ensure_output_dir()
+    filepath = os.path.join(OUTPUT_DIR, filename)
+    with open(filepath, 'wb') as f:
+        f.write(img_data)
+    print("[Backlog] Wrote {0} to Pi SD because Mac did not accept saved frame.".format(filepath))
+    return filepath
 
 def trigger_spray_locally(duration):
     import urllib.request
@@ -199,13 +220,6 @@ def trigger_spray_locally(duration):
     except Exception as e:
         print("[Trigger] Error triggering spray: {0}".format(e))
 
-def remove_if_exists(filepath):
-    try:
-        if os.path.exists(filepath):
-            os.remove(filepath)
-    except Exception as e:
-        print("[Cleanup] Error removing {0}: {1}".format(filepath, e))
-
 def capture_image():
     global last_review_save_time, last_analysis_sent_time
 
@@ -217,7 +231,6 @@ def capture_image():
     now_seconds = time.time()
     should_save = (last_review_save_time <= 0.0) or (now_seconds - last_review_save_time >= SAVE_INTERVAL_SECONDS)
     filename = "img_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S"))
-    filepath = os.path.join(OUTPUT_DIR, filename)
 
     capture_width = WIDTH if should_save else ANALYSIS_WIDTH
     capture_height = HEIGHT if should_save else ANALYSIS_HEIGHT
@@ -228,7 +241,7 @@ def capture_image():
         "-w", str(capture_width),
         "-h", str(capture_height),
         "-q", str(jpeg_quality),
-        "-o", filepath,
+        "-o", "-",
         "-t", "1000"
     ]
     if ROTATION in [90, 180, 270]:
@@ -236,9 +249,9 @@ def capture_image():
     if ROI:
         cmd.extend(["-roi", ROI])
 
-    print("[{0}] Capturing: {1} ({2}x{3} q{4}, save={5})".format(
+    print("[{0}] Capturing to memory: {1} ({2}x{3} q{4}, save={5})".format(
         local_time.strftime("%Y-%m-%d %H:%M:%S"),
-        filepath,
+        filename,
         capture_width,
         capture_height,
         jpeg_quality,
@@ -247,11 +260,11 @@ def capture_image():
 
     try:
         capture_started_at = time.time()
-        subprocess.check_call(cmd, timeout=RASPISTILL_TIMEOUT_SECONDS)
+        img_data = capture_jpeg_bytes(cmd)
         capture_ms = (time.time() - capture_started_at) * 1000
-        file_bytes = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+        file_bytes = len(img_data)
         motion_started_at = time.time()
-        motion_score = get_motion_score(filepath)
+        motion_score = get_motion_score(img_data)
         motion_ms = (time.time() - motion_started_at) * 1000
         force_analysis = (last_analysis_sent_time <= 0.0) or (now_seconds - last_analysis_sent_time >= MOTION_FORCE_INTERVAL_SECONDS)
         motion_allowed = (
@@ -269,6 +282,7 @@ def capture_image():
                 'status': 'motion_skipped',
                 'filename': filename,
                 'should_save': should_save,
+                'sd_write': False,
                 'file_bytes': file_bytes,
                 'motion_score': motion_score,
                 'motion_threshold': MOTION_THRESHOLD,
@@ -279,10 +293,9 @@ def capture_image():
                 'analysis_interval': ANALYSIS_INTERVAL_SECONDS,
                 'save_interval': SAVE_INTERVAL_SECONDS
             })
-            remove_if_exists(filepath)
             return
 
-        result = check_for_squirrel(filepath, should_save=should_save)
+        result = check_for_squirrel(filename, img_data, should_save=should_save)
         last_analysis_sent_time = now_seconds
         is_squirrel = result.get('is_squirrel', False)
         confidence = result.get('confidence', 0.0)
@@ -296,17 +309,18 @@ def capture_image():
         if confidence > 0.0:
             if should_save:
                 last_review_save_time = now_seconds
-            remove_if_exists(filepath)
-            print("[Cleanup] Cleaned up local image from Pi disk.")
-        elif not should_save:
-            remove_if_exists(filepath)
-            print("[Cleanup] Removed unsaved local image after failed transient prediction.")
+            print("[Cleanup] No local image cleanup needed; frame stayed in memory.")
+        elif should_save:
+            write_backlog_image(filename, img_data)
+        else:
+            print("[Cleanup] Dropped unsaved transient frame from memory after failed prediction.")
         report_pi_status({
             'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
             'status': 'analyzed',
             'filename': filename,
             'should_save': should_save,
             'saved_for_review': should_save and confidence > 0.0,
+            'sd_write': should_save and confidence <= 0.0,
             'file_bytes': file_bytes,
             'width': capture_width,
             'height': capture_height,
@@ -324,11 +338,9 @@ def capture_image():
             'analysis_interval': ANALYSIS_INTERVAL_SECONDS,
             'save_interval': SAVE_INTERVAL_SECONDS
         })
-    except subprocess.TimeoutExpired as e:
-        remove_if_exists(filepath)
+    except subprocess.TimeoutExpired:
         print("Error capturing image: raspistill timed out after {0}s".format(RASPISTILL_TIMEOUT_SECONDS))
     except subprocess.CalledProcessError as e:
-        remove_if_exists(filepath)
         print("Error capturing image: {0}".format(e))
     except Exception as e:
         print("Error processing captured image: {0}".format(e))
