@@ -41,13 +41,15 @@ class DBBlast(Base):
     duration = Column(Float, nullable=False)
     video_filename = Column(String, nullable=True)
     model_name = Column(String, nullable=True)
+    classification = Column(String, nullable=True, index=True) # accurate, false_positive, null
 
 class DBVideo(Base):
     __tablename__ = 'videos'
     id = Column(Integer, primary_key=True)
     filename = Column(String, unique=True, nullable=False, index=True)
+    blast_id = Column(Integer, nullable=True, index=True)
     is_favorite = Column(Boolean, default=False, index=True)
-    classification = Column(String, nullable=True, index=True) # accurate, false_positive, null
+    classification = Column(String, nullable=True, index=True) # legacy mirror of blasts.classification
     created_at = Column(DateTime, nullable=False, index=True)
 
 class DBSetting(Base):
@@ -861,6 +863,49 @@ def delete_video_files(filename):
             deleted += 1
     return deleted
 
+def get_blast_for_video(db_video_or_filename):
+    if isinstance(db_video_or_filename, DBVideo):
+        db_video = db_video_or_filename
+        filename = db_video.filename
+        if db_video.blast_id:
+            blast = db_session.query(DBBlast).filter_by(id=db_video.blast_id).first()
+            if blast:
+                return blast
+    else:
+        filename = db_video_or_filename
+        db_video = db_session.query(DBVideo).filter_by(filename=filename).first()
+        if db_video and db_video.blast_id:
+            blast = db_session.query(DBBlast).filter_by(id=db_video.blast_id).first()
+            if blast:
+                return blast
+
+    return db_session.query(DBBlast).filter_by(video_filename=filename).first()
+
+def get_video_event_classification(db_video):
+    blast = get_blast_for_video(db_video)
+    if blast and blast.classification:
+        return blast.classification
+    return db_video.classification
+
+def set_video_event_classification(db_video, classification):
+    db_video.classification = classification
+    blast = get_blast_for_video(db_video)
+    if blast:
+        blast.classification = classification
+        if not db_video.blast_id:
+            db_video.blast_id = blast.id
+        if not blast.video_filename:
+            blast.video_filename = db_video.filename
+    return blast
+
+def link_video_to_blast(db_video, matched_blast):
+    db_video.blast_id = matched_blast.id
+    matched_blast.video_filename = db_video.filename
+    if db_video.classification and not matched_blast.classification:
+        matched_blast.classification = db_video.classification
+    elif matched_blast.classification and not db_video.classification:
+        db_video.classification = matched_blast.classification
+
 def extract_false_alarm_training_frames(video_name, max_frames=6):
     safe_name = os.path.basename(video_name)
     if safe_name != video_name:
@@ -932,7 +977,10 @@ def extract_false_alarm_training_frames(video_name, max_frames=6):
         cap.release()
 
 def extract_all_false_alarm_training_frames(max_frames=6):
-    videos = db_session.query(DBVideo).filter_by(classification='false_positive').all()
+    videos = [
+        video for video in db_session.query(DBVideo).all()
+        if get_video_event_classification(video) == 'false_positive'
+    ]
     total_created = 0
     missing = 0
     processed = 0
@@ -1089,7 +1137,7 @@ def init_db_and_migrate():
     # 1. Create tables
     Base.metadata.create_all(bind=engine)
     
-    # 1.5 Migrate blasts table if needed (add model_name column)
+    # 1.5 Migrate event/media columns if needed.
     try:
         result = db_session.execute(text("PRAGMA table_info(blasts)")).fetchall()
         columns = [row[1] for row in result]
@@ -1097,9 +1145,43 @@ def init_db_and_migrate():
             log_message("[Migration] Adding model_name column to blasts table.")
             db_session.execute(text("ALTER TABLE blasts ADD COLUMN model_name VARCHAR"))
             db_session.commit()
+        if 'classification' not in columns:
+            log_message("[Migration] Adding classification column to blasts table.")
+            db_session.execute(text("ALTER TABLE blasts ADD COLUMN classification VARCHAR"))
+            db_session.commit()
     except Exception as e:
         db_session.rollback()
-        log_message("[Migration] Error adding model_name column to blasts: {0}".format(e))
+        log_message("[Migration] Error adding event columns to blasts: {0}".format(e))
+
+    try:
+        result = db_session.execute(text("PRAGMA table_info(videos)")).fetchall()
+        columns = [row[1] for row in result]
+        if 'blast_id' not in columns:
+            log_message("[Migration] Adding blast_id column to videos table.")
+            db_session.execute(text("ALTER TABLE videos ADD COLUMN blast_id INTEGER"))
+            db_session.commit()
+    except Exception as e:
+        db_session.rollback()
+        log_message("[Migration] Error adding blast_id column to videos: {0}".format(e))
+
+    try:
+        videos = db_session.query(DBVideo).all()
+        for video in videos:
+            blast = get_blast_for_video(video)
+            if not blast:
+                continue
+            if not video.blast_id:
+                video.blast_id = blast.id
+            if not blast.video_filename:
+                blast.video_filename = video.filename
+            if video.classification and not blast.classification:
+                blast.classification = video.classification
+            elif blast.classification and not video.classification:
+                video.classification = blast.classification
+        db_session.commit()
+    except Exception as e:
+        db_session.rollback()
+        log_message("[Migration] Error backfilling event/media links: {0}".format(e))
     
     # 2. Check if we need to migrate settings
     try:
@@ -1183,13 +1265,16 @@ def init_db_and_migrate():
                             type=entry.get('type', 'auto'),
                             confidence=entry.get('confidence'),
                             duration=entry.get('duration', default_settings['spray_duration']),
-                            video_filename=matching_video
+                            video_filename=matching_video,
+                            classification=entry.get('classification')
                         )
                         db_session.add(blast)
+                        db_session.flush()
                         
                         if matching_video:
                             videos_to_insert[matching_video] = {
                                 'filename': matching_video,
+                                'blast_id': blast.id,
                                 'is_favorite': entry.get('favorite', False),
                                 'classification': entry.get('classification'),
                                 'created_at': get_video_timestamp(matching_video) or entry_time
@@ -1198,6 +1283,7 @@ def init_db_and_migrate():
                     for filename, v_info in videos_to_insert.items():
                         db_vid = DBVideo(
                             filename=v_info['filename'],
+                            blast_id=v_info.get('blast_id'),
                             is_favorite=v_info['is_favorite'],
                             classification=v_info['classification'],
                             created_at=v_info['created_at']
@@ -1322,6 +1408,7 @@ def process_synced_videos():
                     created_at = video_time if video_time else datetime.datetime.now()
                     db_vid = DBVideo(
                         filename=filename,
+                        blast_id=None,
                         is_favorite=False,
                         classification=None,
                         created_at=created_at
@@ -1337,7 +1424,7 @@ def process_synced_videos():
                             video_time + datetime.timedelta(hours=14)
                         )
                     ).filter(
-                        (DBBlast.video_filename == None) | (DBBlast.video_filename == filename)
+                        (DBBlast.video_filename == None) | (DBBlast.video_filename == filename) | (DBBlast.id == db_vid.blast_id)
                     ).order_by(DBBlast.timestamp.asc()).all()
                     
                     matched_blast = None
@@ -1352,7 +1439,7 @@ def process_synced_videos():
                             min_error = error
                             
                     if matched_blast:
-                        matched_blast.video_filename = filename
+                        link_video_to_blast(db_vid, matched_blast)
                         # Heal the timestamp: align the database record to the local Eastern Time from the filename
                         matched_blast.timestamp = video_time
         db_session.commit()
@@ -5247,9 +5334,10 @@ def list_videos():
         if not os.path.exists(video_path):
             continue
         videos.append(v.filename)
-        if v.classification:
-            classifications[v.filename] = v.classification
-            if v.classification == 'false_positive':
+        classification = get_video_event_classification(v)
+        if classification:
+            classifications[v.filename] = classification
+            if classification == 'false_positive':
                 false_alarm_video_count += 1
         if v.is_favorite:
             favorites[v.filename] = True
@@ -5305,13 +5393,12 @@ def get_daily_compilation(date_str):
         
     date_clean = date_str.replace('-', '') # YYYYMMDD
     
-    # Query all videos for this day from DB that are not false_positive
+    # Query videos for this day whose linked spray event is not marked false positive.
     try:
         videos = db_session.query(DBVideo).filter(
             DBVideo.filename.like('vid_{0}_%.mp4'.format(date_clean))
-        ).filter(
-            (DBVideo.classification != 'false_positive') | (DBVideo.classification == None)
         ).all()
+        videos = [v for v in videos if get_video_event_classification(v) != 'false_positive']
     except Exception as e:
         return jsonify({'status': 'error', 'message': 'Database query error: ' + str(e)}), 500
         
@@ -5474,7 +5561,7 @@ def delete_video():
     try:
         db_video = db_session.query(DBVideo).filter_by(filename=filename).first()
         false_alarm_training = None
-        if db_video and db_video.classification == 'false_positive':
+        if db_video and get_video_event_classification(db_video) == 'false_positive':
             false_alarm_training = extract_false_alarm_training_frames(filename)
         deleted_files = delete_video_files(filename)
         if db_video or deleted_files > 0:
@@ -5493,7 +5580,10 @@ def delete_video():
 @app.route('/api/delete_false_alarm_videos', methods=['POST'])
 def delete_false_alarm_videos():
     try:
-        videos = db_session.query(DBVideo).filter_by(classification='false_positive').all()
+        videos = [
+            video for video in db_session.query(DBVideo).all()
+            if get_video_event_classification(video) == 'false_positive'
+        ]
         deleted_files = 0
         deleted_videos = 0
         false_alarm_training = {
@@ -5539,17 +5629,20 @@ def classify_video():
     try:
         db_vid = db_session.query(DBVideo).filter_by(filename=video_name).first()
         if db_vid:
-            db_vid.classification = classification
+            set_video_event_classification(db_vid, classification)
         else:
             video_time = get_video_timestamp(video_name)
             created_at = video_time if video_time else datetime.datetime.now()
             db_vid = DBVideo(
                 filename=video_name,
+                blast_id=None,
                 is_favorite=False,
                 classification=classification,
                 created_at=created_at
             )
             db_session.add(db_vid)
+            db_session.flush()
+            set_video_event_classification(db_vid, classification)
         db_session.commit()
         false_alarm_training = None
         if classification == 'false_positive':
@@ -5586,6 +5679,7 @@ def favorite_video():
             created_at = video_time if video_time else datetime.datetime.now()
             db_vid = DBVideo(
                 filename=video_name,
+                blast_id=None,
                 is_favorite=favorite,
                 classification=None,
                 created_at=created_at
@@ -5614,15 +5708,13 @@ def get_available_models():
 
 def get_model_accuracies():
     try:
-        results = db_session.query(DBBlast, DBVideo).outerjoin(
-            DBVideo, DBBlast.video_filename == DBVideo.filename
-        ).filter(DBBlast.type == 'auto').all()
+        results = db_session.query(DBBlast).filter(DBBlast.type == 'auto').all()
     except Exception as e:
         print("Error querying blasts for model accuracies:", e)
         results = []
         
     model_accuracies = {}
-    for b, v in results:
+    for b in results:
         model_key = b.model_name or 'unknown'
         if model_key not in model_accuracies:
             model_accuracies[model_key] = {
@@ -5632,10 +5724,10 @@ def get_model_accuracies():
                 'accuracy_rate': None
             }
         model_accuracies[model_key]['total'] += 1
-        if v and v.classification:
-            if v.classification == 'accurate':
+        if b.classification:
+            if b.classification == 'accurate':
                 model_accuracies[model_key]['accurate'] += 1
-            elif v.classification == 'false_positive':
+            elif b.classification == 'false_positive':
                 model_accuracies[model_key]['false_positive'] += 1
                 
     for model_key, stats in model_accuracies.items():
@@ -5748,12 +5840,15 @@ def save_model_checkpoint():
 @app.route('/api/blasts')
 def get_blasts():
     try:
-        results = db_session.query(DBBlast, DBVideo).outerjoin(
-            DBVideo, DBBlast.video_filename == DBVideo.filename
-        ).order_by(DBBlast.timestamp.desc()).all()
+        blasts_query = db_session.query(DBBlast).order_by(DBBlast.timestamp.desc()).all()
+        videos_query = db_session.query(DBVideo).all()
+        videos_by_blast_id = {v.blast_id: v for v in videos_query if v.blast_id}
+        videos_by_filename = {v.filename: v for v in videos_query}
     except Exception as e:
         print("Error querying blasts:", e)
-        results = []
+        blasts_query = []
+        videos_by_blast_id = {}
+        videos_by_filename = {}
         
     blasts = []
     accurate_count = 0
@@ -5761,23 +5856,28 @@ def get_blasts():
     auto_blasts_count = 0
     manual_blasts_count = 0
     
-    for b, v in results:
+    for b in blasts_query:
+        v = videos_by_blast_id.get(b.id)
+        if not v and b.video_filename:
+            v = videos_by_filename.get(b.video_filename)
+        video_filename = v.filename if v else b.video_filename
         blast_dict = {
             'timestamp': b.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
             'epoch': b.timestamp.timestamp(),
             'type': b.type,
             'confidence': b.confidence,
             'duration': b.duration,
-            'video_filename': b.video_filename
+            'video_filename': video_filename,
+            'event_id': b.id
         }
         
+        if b.classification:
+            blast_dict['classification'] = b.classification
+            if b.classification == 'accurate':
+                accurate_count += 1
+            elif b.classification == 'false_positive':
+                false_positive_count += 1
         if v:
-            if v.classification:
-                blast_dict['classification'] = v.classification
-                if v.classification == 'accurate':
-                    accurate_count += 1
-                elif v.classification == 'false_positive':
-                    false_positive_count += 1
             if v.is_favorite:
                 blast_dict['favorite'] = True
                 
@@ -5795,7 +5895,7 @@ def get_blasts():
         squirrel_imgs = db_session.query(DBImage).filter_by(category='squirrel', is_auto_classified=False).all()
         for img in squirrel_imgs:
             has_blast = False
-            for b, _ in results:
+            for b in blasts_query:
                 diff = abs((img.captured_at - b.timestamp).total_seconds())
                 if diff <= 30.0:
                     has_blast = True
