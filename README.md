@@ -45,6 +45,7 @@ Normal operation keeps Pi media in memory:
 - Review frames are saved on the Mac, not the Pi.
 - Pi SD-card writes are used only as a backlog fallback when the Mac cannot accept a saved review frame.
 - Spray videos record to `/dev/shm/squirrel_soaker` first and move to the Pi SD backlog only if upload fails.
+- The Pi backlog is capped at 24 hours, 300 files, or 250 MB, and the oldest files are pruned first.
 - Spray/detection history is stored as durable blast events; videos are media attachments, so deleting video files does not remove false-positive or accuracy history.
 
 ---
@@ -168,6 +169,7 @@ Useful signs in the capture log:
 - `No local image cleanup needed; frame stayed in memory`: normal successful upload path.
 - `motion_skipped`: motion prefilter avoided inference/upload.
 - `sd_write: false` in health telemetry: normal no-SD-write operation.
+- `Pruned ... old backlog files`: the Pi removed oldest fallback files to protect SD-card space.
 
 ---
 
@@ -241,7 +243,7 @@ Dashboard health graph:
 - Server-side persistent data lives under `data/`.
 - Live snapshots update from the latest analyzed HTTP still frame.
 - If the live view slows down, check the health graph first. Capture time is usually stable; spikes generally come from upload or server-side prediction handling.
-- If the Pi cannot reach the Mac, saved review frames and spray videos may accumulate in the Pi backlog and are retried through `/sync`.
+- If the Pi cannot reach the Mac, saved review frames and spray videos may accumulate in the Pi backlog and are retried through `/sync`; backlog pruning keeps this from filling the SD card.
 
 ---
 

@@ -36,6 +36,9 @@ MOTION_FORCE_INTERVAL_SECONDS = 30
 RASPISTILL_TIMEOUT_SECONDS = 20
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
+BACKLOG_MAX_FILES = 300
+BACKLOG_MAX_BYTES = 250 * 1024 * 1024
+BACKLOG_MAX_AGE_SECONDS = 24 * 60 * 60
 MAC_IP = '192.168.86.137'
 
 CONFIDENCE_THRESHOLD = 0.70
@@ -249,6 +252,62 @@ def ensure_output_dir():
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
+def get_backlog_files():
+    files = []
+    if not os.path.exists(OUTPUT_DIR):
+        return files
+    for filename in os.listdir(OUTPUT_DIR):
+        lower = filename.lower()
+        if not (lower.endswith('.jpg') or lower.endswith('.jpeg') or lower.endswith('.h264')):
+            continue
+        path = os.path.join(OUTPUT_DIR, filename)
+        if not os.path.isfile(path):
+            continue
+        try:
+            stat = os.stat(path)
+            files.append({
+                'path': path,
+                'filename': filename,
+                'mtime': stat.st_mtime,
+                'size': stat.st_size
+            })
+        except Exception:
+            pass
+    files.sort(key=lambda item: item['mtime'])
+    return files
+
+def prune_backlog(reason='capacity'):
+    now = time.time()
+    files = get_backlog_files()
+    removed = 0
+    removed_bytes = 0
+
+    for info in list(files):
+        if now - info['mtime'] <= BACKLOG_MAX_AGE_SECONDS:
+            continue
+        try:
+            os.remove(info['path'])
+            removed += 1
+            removed_bytes += info['size']
+            files.remove(info)
+        except Exception as e:
+            print("[Backlog] Could not remove expired {0}: {1}".format(info['filename'], e))
+
+    total_bytes = sum(info['size'] for info in files)
+    while files and (len(files) > BACKLOG_MAX_FILES or total_bytes > BACKLOG_MAX_BYTES):
+        info = files.pop(0)
+        try:
+            os.remove(info['path'])
+            removed += 1
+            removed_bytes += info['size']
+            total_bytes -= info['size']
+        except Exception as e:
+            print("[Backlog] Could not prune {0}: {1}".format(info['filename'], e))
+
+    if removed:
+        print("[Backlog] Pruned {0} old backlog files ({1} bytes) because {2}.".format(removed, removed_bytes, reason))
+    return removed
+
 def check_for_squirrel(filename, img_data, should_save=True, is_test=False):
     import urllib.request
 
@@ -338,10 +397,12 @@ def capture_jpeg_bytes(cmd):
 
 def write_backlog_image(filename, img_data):
     ensure_output_dir()
+    prune_backlog('before writing a fallback image')
     filepath = os.path.join(OUTPUT_DIR, filename)
     with open(filepath, 'wb') as f:
         f.write(img_data)
     print("[Backlog] Wrote {0} to Pi SD because Mac did not accept saved frame.".format(filepath))
+    prune_backlog('after writing a fallback image')
     return filepath
 
 def find_camera_still_command():
@@ -517,6 +578,7 @@ def capture_image():
             print("[Cleanup] No local image cleanup needed; frame stayed in memory.")
         elif should_save:
             write_backlog_image(filename, img_data)
+            last_review_save_time = now_seconds
         else:
             print("[Cleanup] Dropped unsaved transient frame from memory after failed prediction.")
         report_pi_status({
