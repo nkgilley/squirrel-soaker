@@ -2602,7 +2602,7 @@ HTML_TEMPLATE = """
             <span class="close-btn" onclick="closePreviewModal()">&times;</span>
             <div style="display: flex; justify-content: center; align-items: center; max-height: 80vh; overflow: hidden; position: relative; border-radius: 8px;">
                 <img id="preview-modal-img" src="" style="max-width: 100%; max-height: 80vh; object-fit: contain; border-radius: 8px;">
-                <div id="preview-modal-time" style="position: absolute; bottom: 12px; right: 12px; background: rgba(15, 23, 42, 0.85); color: white; padding: 0.35rem 0.65rem; border-radius: 8px; font-size: 0.8rem; font-family: monospace; border: 1px solid var(--border-color); backdrop-filter: blur(6px); pointer-events: none;">Captured: --</div>
+                <div id="preview-modal-time" style="position: absolute; top: 12px; right: 12px; background: rgba(15, 23, 42, 0.85); color: white; padding: 0.35rem 0.65rem; border-radius: 8px; font-size: 0.8rem; font-family: monospace; border: 1px solid var(--border-color); backdrop-filter: blur(6px); pointer-events: none;">--</div>
             </div>
             <div id="preview-modal-title" style="margin-top: 1rem; font-weight: 600; text-align: center; color: var(--text-primary);">Live Snapshot Preview</div>
             <div style="display: flex; justify-content: center; margin-top: 1rem; margin-bottom: 0.5rem;">
@@ -2859,7 +2859,7 @@ HTML_TEMPLATE = """
                                 <span>LIVE</span>
                             </div>
                             <img id="dash-feed-img" src="/api/latest_image?t=${Date.now()}" onerror="this.src='https://images.unsplash.com/photo-1542273917363-3b1817f69a2d?auto=format&fit=crop&w=800&q=80'; console.warn('No camera snap available');" style="cursor: pointer;" onclick="openPreviewModal(this.src, 'Latest Camera Snapshot')">
-                            <div id="dash-feed-time" style="position: absolute; bottom: 8px; right: 8px; background: rgba(15, 23, 42, 0.75); color: var(--text-primary); padding: 0.25rem 0.5rem; border-radius: 6px; font-size: 0.75rem; font-family: monospace; border: 1px solid var(--border-color); backdrop-filter: blur(4px);">Captured: --</div>
+                            <div id="dash-feed-time" style="position: absolute; top: 8px; right: 8px; background: rgba(15, 23, 42, 0.75); color: var(--text-primary); padding: 0.25rem 0.5rem; border-radius: 6px; font-size: 0.75rem; font-family: monospace; border: 1px solid var(--border-color); backdrop-filter: blur(4px);">--</div>
                         </div>
                         <div id="dash-feed-subtext" style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; text-align: center;">
                             Updates automatically every 5s from the latest analyzed still frame.
@@ -2922,10 +2922,10 @@ HTML_TEMPLATE = """
             }
 
             const timeEl = document.getElementById('dash-feed-time');
-            if (timeEl) timeEl.innerText = `Captured: ${formattedTime}`;
+            if (timeEl) timeEl.innerText = formattedTime;
 
             const modalTimeEl = document.getElementById('preview-modal-time');
-            if (modalTimeEl) modalTimeEl.innerText = `Captured: ${formattedTime}`;
+            if (modalTimeEl) modalTimeEl.innerText = formattedTime;
 
             return mtime;
         }
