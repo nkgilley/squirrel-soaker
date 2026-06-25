@@ -17,7 +17,7 @@ The current capture path uses HTTP still-image uploads. RTSP streaming was remov
 sequenceDiagram
     autonumber
     loop Daylight hours, configurable cadence
-        Raspberry Pi->>Raspberry Pi: Capture JPEG bytes in memory with raspistill
+        Raspberry Pi->>Raspberry Pi: Capture JPEG bytes in memory with rpicam-still
         Raspberry Pi->>Raspberry Pi: Optional motion prefilter
         alt Motion skipped
             Raspberry Pi->>Mac/Docker Server: POST /api/pi_status
@@ -40,7 +40,7 @@ sequenceDiagram
 
 Normal operation keeps Pi media in memory:
 
-- Still images are captured through `raspistill -o -` and posted directly to the Mac.
+- Still images are captured through `rpicam-still --output -` on current Raspberry Pi OS, with fallback support for legacy `raspistill`, and posted directly to the Mac.
 - Unsaved analysis frames are dropped after inference.
 - Review frames are saved on the Mac, not the Pi.
 - Pi SD-card writes are used only as a backlog fallback when the Mac cannot accept a saved review frame.
@@ -119,6 +119,15 @@ The repo includes Pi-side scripts and services:
 - `squirrel-trigger.service`: runs the local trigger server.
 - `deploy_pi.sh`: copies Pi scripts/services and restarts the services.
 
+On a freshly flashed Raspberry Pi OS install, install the small Python dependency used for motion scoring:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pil
+```
+
+Current Raspberry Pi OS uses `rpicam-still` and `rpicam-vid`. The Pi scripts auto-detect those tools first, then fall back to `libcamera-*` or legacy `raspistill`/`raspivid` if present.
+
 ### Configure Host IP
 
 The Pi scripts need the Mac/Docker host IP:
@@ -137,13 +146,19 @@ From the Mac workspace:
 ./deploy_pi.sh
 ```
 
-The deploy script copies the Pi files to `pi3:/home/pi/squirrel_soaker`, installs the systemd services, enables capture and trigger services, disables the old stream service, and restarts everything.
+The deploy script copies the Pi files to `pi@192.168.86.136:/home/pi/squirrel_soaker` by default, installs the systemd services, enables capture and trigger services, disables the old stream service, and restarts everything.
+
+Override the target if needed:
+
+```bash
+PI_HOST=pi@<pi-ip> ./deploy_pi.sh
+```
 
 ### Monitor Pi Logs
 
 ```bash
-ssh pi3 'sudo journalctl -u squirrel-capture.service -f'
-ssh pi3 'sudo journalctl -u squirrel-trigger.service -f'
+ssh pi@192.168.86.136 'sudo journalctl -u squirrel-capture.service -f'
+ssh pi@192.168.86.136 'sudo journalctl -u squirrel-trigger.service -f'
 ```
 
 Useful signs in the capture log:
@@ -165,7 +180,7 @@ Important settings:
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
 - **Analysis Size and JPEG Quality**: smaller/faster transient frames.
 - **Review JPEG Quality**: higher quality frames saved for classification.
-- **Camera ROI**: still-image crop used by `raspistill`.
+- **Camera ROI**: still-image crop used by the Pi camera command.
 - **Video ROI**: crop used for spray event videos.
 - **Camera Rotation**: Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.

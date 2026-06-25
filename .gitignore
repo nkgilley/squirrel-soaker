@@ -6,3 +6,4 @@ __pycache__/
 .DS_Store
 test_rot0.jpg
 test_camera.jpg
+pi-home-backup-*/

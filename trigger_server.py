@@ -46,6 +46,40 @@ def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
+def find_camera_video_command():
+    for binary in ('rpicam-vid', 'libcamera-vid', 'raspivid'):
+        path = shutil.which(binary)
+        if path:
+            return binary
+    return 'raspivid'
+
+def build_video_command(duration_ms, filepath, rotation=None, roi=None):
+    camera_cmd = find_camera_video_command()
+    if camera_cmd in ('rpicam-vid', 'libcamera-vid'):
+        cmd = [
+            camera_cmd,
+            "--timeout", str(duration_ms),
+            "--width", "1280",
+            "--height", "720",
+            "--output", filepath,
+            "--codec", "h264",
+            "--nopreview"
+        ]
+        if rotation in [0, 180]:
+            cmd.extend(["--rotation", str(rotation)])
+        elif rotation in [90, 270]:
+            print("[Video] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, rotation))
+        if roi:
+            cmd.extend(["--roi", roi])
+        return cmd
+
+    cmd = ["raspivid", "-t", str(duration_ms), "-w", "1280", "-h", "720", "-o", filepath]
+    if rotation in [90, 180, 270]:
+        cmd.extend(["-rot", str(rotation)])
+    if roi:
+        cmd.extend(["-roi", roi])
+    return cmd
+
 def record_video(duration_ms=5000, rotation=None, roi=None):
     import urllib.parse
 
@@ -58,11 +92,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None):
     filename = "vid_{0}.h264".format(local_time.strftime("%Y%m%d_%H%M%S"))
     filepath = os.path.join(VIDEO_TMP_DIR, filename)
 
-    cmd = ["raspivid", "-t", str(duration_ms), "-w", "1280", "-h", "720", "-o", filepath]
-    if rot in [90, 180, 270]:
-        cmd.extend(["-rot", str(rot)])
-    if selected_roi:
-        cmd.extend(["-roi", selected_roi])
+    cmd = build_video_command(duration_ms, filepath, rotation=rot, roi=selected_roi)
 
     print("[Video] Recording {0}s video to RAM at {1}... (rotation={2}, roi={3})".format(duration_ms / 1000.0, filepath, rot, selected_roi))
     try:
@@ -82,7 +112,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None):
             shutil.move(filepath, backlog_path)
             print("[Video] Upload failed ({0}); saved video to SD backlog: {1}".format(e, backlog_path))
     except subprocess.TimeoutExpired:
-        print("[Video] Error recording video: raspivid timed out after {0}s".format(timeout_seconds))
+        print("[Video] Error recording video: camera command timed out after {0}s".format(timeout_seconds))
         try:
             if os.path.exists(filepath):
                 os.remove(filepath)
