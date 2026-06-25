@@ -1573,6 +1573,16 @@ HTML_TEMPLATE = """
             z-index: 10;
         }
 
+        .logo-section {
+            display: block;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .logo-section:hover h1 {
+            filter: brightness(1.15);
+        }
+
         .logo-section h1 {
             font-size: 1.5rem;
             font-weight: 800;
@@ -2412,10 +2422,10 @@ HTML_TEMPLATE = """
 <body>
 
     <header>
-        <div class="logo-section">
+        <a class="logo-section" href="#dashboard" onclick="setViewMode('dashboard'); return false;" aria-label="Go to dashboard">
             <h1>🐿️ Squirrel Soaker 9001</h1>
             <p>Dataset Image Classifier</p>
-        </div>
+        </a>
         <div class="header-actions">
             <button id="automation-btn" class="btn" onclick="toggleAutomation()" style="background-color: var(--color-squirrel); color: white; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3); border: none;">
                 <span id="automation-text">Automation: Active 🟢</span>
