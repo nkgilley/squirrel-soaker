@@ -594,19 +594,19 @@ def get_local_base_url():
 
 def send_blast_notification(blast_type, confidence=None, image_filename=None):
     # Instead of running sync_images.sh (which fails in Docker), we poll for the newly
-    # uploaded and converted video file to arrive in data/videos/ from the Pi (takes up to 10s).
+    # uploaded and converted video file to arrive in data/videos/ from the Pi.
     video_path = None
     video_filename = None
     
-    for attempt in range(25):
+    for attempt in range(75):
         try:
             import glob
             video_files = glob.glob(os.path.join(VIDEOS_DIR, '*.mp4'))
             if video_files:
                 video_files.sort(key=os.path.getmtime)
                 candidate_path = video_files[-1]
-                # If the latest video was modified in the last 30 seconds, it's the current event's video
-                if time.time() - os.path.getmtime(candidate_path) < 30:
+                # Recording, upload, and conversion can take 30-60s on the Pi 3.
+                if time.time() - os.path.getmtime(candidate_path) < 120:
                     video_path = candidate_path
                     video_filename = os.path.basename(video_path)
                     break
@@ -615,7 +615,7 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
         time.sleep(1)
         
     if not video_path:
-        log_message("[Notification] Warning: No new spray video was found in VIDEOS_DIR after 25s polling.")
+        log_message("[Notification] Warning: No new spray video was found in VIDEOS_DIR after 75s polling.")
 
     settings = load_settings()
     notification_type = settings.get('notification_type', 'join')
@@ -730,10 +730,11 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
             except Exception as e:
                 log_message("[Notification] Error sending SMTP email: {0}".format(e))
 
-def log_blast(blast_type, confidence=None, model_name=None, image_filename=None):
+def log_blast(blast_type, confidence=None, model_name=None, image_filename=None, duration=None):
     import datetime
     now = datetime.datetime.now()
-    duration = get_current_spray_duration()
+    if duration is None:
+        duration = get_current_spray_duration()
     
     if model_name is None and blast_type == 'auto':
         model_name = active_model_name
@@ -6258,6 +6259,39 @@ def spray():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+@app.route('/api/spray_confirm', methods=['POST'])
+def spray_confirm():
+    global last_spray_time
+    data = request.get_json(silent=True) or {}
+    confidence = data.get('confidence')
+    try:
+        confidence = float(confidence) if confidence is not None else None
+    except Exception:
+        confidence = None
+
+    duration = data.get('duration')
+    try:
+        duration = float(duration) if duration is not None else None
+    except Exception:
+        duration = None
+
+    image_filename = data.get('image_filename')
+    if image_filename and os.path.basename(image_filename) != image_filename:
+        image_filename = None
+
+    model_name = data.get('model_name') or active_model_name
+
+    try:
+        log_blast('auto', confidence, model_name, image_filename, duration=duration)
+        last_spray_time = time.time()
+        log_message("[Spray Confirm] Pi confirmed automatic spray. confidence={0}, image={1}".format(
+            "{0:.1f}%".format(confidence * 100) if confidence is not None else "n/a",
+            image_filename or "none"
+        ))
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/api/automation_status')
 def get_automation_status():
@@ -6596,14 +6630,11 @@ def predict():
     
     if should_spray:
         if not is_test:
-            log_blast('auto', confidence, active_model_name, filename if should_save_image else None)
-            last_spray_time = current_time
-            log_message("[Spray Decision] {0}/{1} detections in {2:.0f}s, avg confidence {3:.1f}%. Cooldown activated for {4}s.".format(
+            log_message("[Spray Decision] Spray requested after {0}/{1} detections in {2:.0f}s, avg confidence {3:.1f}%. Waiting for Pi trigger confirmation.".format(
                 decision['hits'],
                 decision['required_hits'],
                 decision['window_seconds'],
-                decision['average_confidence'] * 100,
-                cooldown
+                decision['average_confidence'] * 100
             ))
     elif is_squirrel and automation_enabled:
         if not meets_threshold:
@@ -6654,6 +6685,7 @@ def predict():
         'metrics': metrics,
         'spray_decision': decision,
         'automation_enabled': automation_enabled,
+        'active_model': active_model_name,
         'spray_duration': duration
     })
 load_active_model()
