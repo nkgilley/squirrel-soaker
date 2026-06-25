@@ -25,6 +25,8 @@ MAC_IP = '192.168.86.137'
 CAPTURES_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 VIDEO_TMP_DIR = '/dev/shm/squirrel_soaker'
 BACKLOG_MIN_AGE_SECONDS = 45
+VIDEO_START_LEAD_SECONDS = 1.0
+VIDEO_POST_ROLL_SECONDS = 1.0
 sync_lock = threading.Lock()
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -217,10 +219,14 @@ class TriggerHandler(BaseHTTPRequestHandler):
                 SOLENOID_PIN, duration, rotation, roi
             ))
 
-            video_duration_ms = int(max(5.0, duration + 2.0) * 1000)
+            video_duration_seconds = max(1.0, duration + VIDEO_POST_ROLL_SECONDS)
+            video_duration_ms = int(video_duration_seconds * 1000)
             video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi))
             video_thread.daemon = True
             video_thread.start()
+            if VIDEO_START_LEAD_SECONDS > 0:
+                print("[Video] Giving camera {0:.1f}s head start before solenoid.".format(VIDEO_START_LEAD_SECONDS))
+                time.sleep(VIDEO_START_LEAD_SECONDS)
 
             if GPIO:
                 GPIO.output(SOLENOID_PIN, GPIO.HIGH)
