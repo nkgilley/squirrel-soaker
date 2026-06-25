@@ -45,6 +45,7 @@ Normal operation keeps Pi media in memory:
 - Review frames are saved on the Mac, not the Pi.
 - Pi SD-card writes are used only as a backlog fallback when the Mac cannot accept a saved review frame.
 - Spray videos record to `/dev/shm/squirrel_soaker` first and move to the Pi SD backlog only if upload fails.
+- Spray/detection history is stored as durable blast events; videos are media attachments, so deleting video files does not remove false-positive or accuracy history.
 
 ---
 
