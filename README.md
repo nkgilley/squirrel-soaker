@@ -178,6 +178,7 @@ Important settings:
 
 - **Analysis Interval**: how often the Pi captures and analyzes a frame. Current default is 5 seconds.
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
+- **Daylight Schedule**: nighttime capture pause can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable.
 - **Analysis Size and JPEG Quality**: smaller/faster transient frames.
 - **Review JPEG Quality**: higher quality frames saved for classification.
 - **Camera ROI**: still-image crop used by the Pi camera command.

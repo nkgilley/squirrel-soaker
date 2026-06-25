@@ -393,6 +393,13 @@ default_settings = {
     'capture_interval': 5,
     'analysis_interval': 5,
     'save_interval': 30,
+    'daylight_mode': 'sun',
+    'daylight_latitude': 38.9586,
+    'daylight_longitude': -77.3570,
+    'sunrise_offset_minutes': 0,
+    'sunset_offset_minutes': 0,
+    'daylight_start_hour': 6,
+    'daylight_end_hour': 20,
     'analysis_width': 960,
     'analysis_height': 720,
     'analysis_jpeg_quality': 65,
@@ -3079,6 +3086,44 @@ HTML_TEMPLATE = """
                     </div>
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Daylight Schedule</h3>
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Nighttime Mode</label>
+                            <select id="settings-daylight-mode" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
+                                <option value="sun">Sunrise/Sunset</option>
+                                <option value="fixed">Fixed Hours</option>
+                            </select>
+                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Sunrise/sunset defaults to Reston, VA and keeps the Pi quiet overnight.</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Latitude</label>
+                                <input type="number" id="settings-daylight-latitude" min="-90" max="90" step="0.0001" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Longitude</label>
+                                <input type="number" id="settings-daylight-longitude" min="-180" max="180" step="0.0001" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sunrise Offset (minutes)</label>
+                                <input type="number" id="settings-sunrise-offset" min="-180" max="180" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sunset Offset (minutes)</label>
+                                <input type="number" id="settings-sunset-offset" min="-180" max="180" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Fixed Start Hour</label>
+                                <input type="number" id="settings-daylight-start-hour" min="0" max="23" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Fixed End Hour</label>
+                                <input type="number" id="settings-daylight-end-hour" min="0" max="23" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Capture Quality & Motion</h3>
                         <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
                             <div style="display: flex; flex-direction: column; gap: 0.4rem;">
@@ -3422,6 +3467,13 @@ HTML_TEMPLATE = """
                 if (data.status === 'success') {
                     document.getElementById('settings-analysis-interval').value = data.settings.analysis_interval || data.settings.capture_interval || 5;
                     document.getElementById('settings-save-interval').value = data.settings.save_interval || 30;
+                    document.getElementById('settings-daylight-mode').value = data.settings.daylight_mode || 'sun';
+                    document.getElementById('settings-daylight-latitude').value = data.settings.daylight_latitude ?? 38.9586;
+                    document.getElementById('settings-daylight-longitude').value = data.settings.daylight_longitude ?? -77.3570;
+                    document.getElementById('settings-sunrise-offset').value = data.settings.sunrise_offset_minutes ?? 0;
+                    document.getElementById('settings-sunset-offset').value = data.settings.sunset_offset_minutes ?? 0;
+                    document.getElementById('settings-daylight-start-hour').value = data.settings.daylight_start_hour ?? 6;
+                    document.getElementById('settings-daylight-end-hour').value = data.settings.daylight_end_hour ?? 20;
                     document.getElementById('settings-analysis-width').value = data.settings.analysis_width || 960;
                     document.getElementById('settings-analysis-height').value = data.settings.analysis_height || 720;
                     document.getElementById('settings-analysis-quality').value = data.settings.analysis_jpeg_quality || 65;
@@ -3499,6 +3551,13 @@ HTML_TEMPLATE = """
             const analysis_interval = parseInt(document.getElementById('settings-analysis-interval').value);
             const save_interval = parseInt(document.getElementById('settings-save-interval').value);
             const capture_interval = analysis_interval;
+            const daylight_mode = document.getElementById('settings-daylight-mode').value;
+            const daylight_latitude = parseFloat(document.getElementById('settings-daylight-latitude').value);
+            const daylight_longitude = parseFloat(document.getElementById('settings-daylight-longitude').value);
+            const sunrise_offset_minutes = parseInt(document.getElementById('settings-sunrise-offset').value);
+            const sunset_offset_minutes = parseInt(document.getElementById('settings-sunset-offset').value);
+            const daylight_start_hour = parseInt(document.getElementById('settings-daylight-start-hour').value);
+            const daylight_end_hour = parseInt(document.getElementById('settings-daylight-end-hour').value);
             const analysis_width = parseInt(document.getElementById('settings-analysis-width').value);
             const analysis_height = parseInt(document.getElementById('settings-analysis-height').value);
             const analysis_jpeg_quality = parseInt(document.getElementById('settings-analysis-quality').value);
@@ -3538,6 +3597,13 @@ HTML_TEMPLATE = """
                         capture_interval,
                         analysis_interval,
                         save_interval,
+                        daylight_mode,
+                        daylight_latitude,
+                        daylight_longitude,
+                        sunrise_offset_minutes,
+                        sunset_offset_minutes,
+                        daylight_start_hour,
+                        daylight_end_hour,
                         analysis_width,
                         analysis_height,
                         analysis_jpeg_quality,
@@ -5854,6 +5920,13 @@ def api_health():
             'motion_prefilter_enabled': settings.get('motion_prefilter_enabled'),
             'motion_threshold': settings.get('motion_threshold'),
             'motion_force_interval': settings.get('motion_force_interval'),
+            'daylight_mode': settings.get('daylight_mode'),
+            'daylight_latitude': settings.get('daylight_latitude'),
+            'daylight_longitude': settings.get('daylight_longitude'),
+            'sunrise_offset_minutes': settings.get('sunrise_offset_minutes'),
+            'sunset_offset_minutes': settings.get('sunset_offset_minutes'),
+            'daylight_start_hour': settings.get('daylight_start_hour'),
+            'daylight_end_hour': settings.get('daylight_end_hour'),
             'camera_roi': settings.get('camera_roi'),
             'video_roi': settings.get('video_roi'),
             'camera_rotation': settings.get('camera_rotation'),
