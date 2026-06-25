@@ -797,11 +797,7 @@ def clean_videos_directory(directory, retention_days):
                 
                 mtime = os.path.getmtime(fp)
                 if mtime < cutoff:
-                    os.remove(fp)
-                    # Update blast references and delete from DB
-                    db_session.query(DBBlast).filter_by(video_filename=f).update({DBBlast.video_filename: None})
-                    db_session.query(DBVideo).filter_by(filename=f).delete()
-                    deleted += 1
+                    deleted += delete_video_files(f)
             except Exception as e:
                 print("Error cleaning video {0}: {1}".format(f, e))
     if deleted > 0:
@@ -810,6 +806,24 @@ def clean_videos_directory(directory, retention_days):
         except Exception as e:
             db_session.rollback()
             print("Error committing video cleanup:", e)
+    return deleted
+
+def delete_video_files(filename):
+    safe_filename = os.path.basename(filename)
+    if safe_filename != filename:
+        raise ValueError("Invalid video filename")
+
+    deleted = 0
+    paths = [
+        os.path.join(VIDEOS_DIR, safe_filename)
+    ]
+    if safe_filename.lower().endswith('.mp4'):
+        paths.append(os.path.join(VIDEOS_DIR, safe_filename[:-4] + '.jpg'))
+
+    for path in paths:
+        if os.path.exists(path) and os.path.isfile(path):
+            os.remove(path)
+            deleted += 1
     return deleted
 
 def clean_not_squirrel_directory(not_squirrel_dir, retention_days, min_count):
@@ -4100,6 +4114,7 @@ HTML_TEMPLATE = """
                 allLoadedVideos = videos || [];
                 videoClassifications = data.classifications || {};
                 videoFavorites = data.favorites || {};
+                const falseAlarmVideoCount = data.false_alarm_video_count || 0;
                 
                 // Extract unique dates from the videos list
                 const datesSet = new Set();
@@ -4153,6 +4168,11 @@ HTML_TEMPLATE = """
                                 <button id="favorites-filter-btn" class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: ${showFavoritesOnly ? '#f59e0b' : 'transparent'}; border: 1px solid ${showFavoritesOnly ? '#f59e0b' : 'var(--border-color)'}; color: ${showFavoritesOnly ? '#020617' : 'var(--text-secondary)'}; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onclick="toggleFavoritesFilter()">
                                     ⭐ ${showFavoritesOnly ? 'Favorites Only' : 'All Videos'}
                                 </button>
+                                ${falseAlarmVideoCount > 0 ? `
+                                <button class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: transparent; border: 1px solid var(--color-delete); color: var(--color-delete); font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onclick="deleteAllFalseAlarmVideos()">
+                                    Delete False Alarms (${falseAlarmVideoCount})
+                                </button>
+                                ` : ''}
                                 ${sortedDates.length > 0 ? `
                                 <div style="display: flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem;">
                                     <select id="compilation-date-select" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 8px; cursor: pointer; outline: none; font-weight: 600;">
@@ -4335,6 +4355,24 @@ HTML_TEMPLATE = """
                 }
             } catch (e) {
                 console.error("Error deleting video:", e);
+            }
+        }
+
+        async function deleteAllFalseAlarmVideos() {
+            if (!confirm('Delete all video files marked as false alarms? The false-alarm history and accuracy graph will be kept.')) return;
+            try {
+                const res = await fetch('/api/delete_false_alarm_videos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    loadNext();
+                } else {
+                    alert("Delete failed: " + data.message);
+                }
+            } catch (e) {
+                console.error("Error deleting false alarm videos:", e);
             }
         }
 
@@ -5020,11 +5058,17 @@ def list_videos():
     videos = []
     classifications = {}
     favorites = {}
+    false_alarm_video_count = 0
     
     for v in videos_list:
+        video_path = os.path.join(VIDEOS_DIR, v.filename)
+        if not os.path.exists(video_path):
+            continue
         videos.append(v.filename)
         if v.classification:
             classifications[v.filename] = v.classification
+            if v.classification == 'false_positive':
+                false_alarm_video_count += 1
         if v.is_favorite:
             favorites[v.filename] = True
             
@@ -5032,6 +5076,7 @@ def list_videos():
         'videos': videos,
         'classifications': classifications,
         'favorites': favorites,
+        'false_alarm_video_count': false_alarm_video_count,
         'stats': get_stats(),
         'has_history': db_session.query(DBUndoEvent).count() > 0
     })
@@ -5244,26 +5289,41 @@ def delete_video():
     if not filename:
         return jsonify({'status': 'error', 'message': 'Missing filename'}), 400
         
-    filepath = os.path.join(VIDEOS_DIR, filename)
-    file_exists = os.path.exists(filepath)
-    
-    if file_exists:
-        try:
-            os.remove(filepath)
-        except Exception as e:
-            return jsonify({'status': 'error', 'message': 'Failed to delete video file: ' + str(e)}), 500
-            
     try:
-        db_session.query(DBBlast).filter_by(video_filename=filename).update({DBBlast.video_filename: None})
-        deleted_count = db_session.query(DBVideo).filter_by(filename=filename).delete()
-        db_session.commit()
-        if deleted_count > 0 or file_exists:
-            return jsonify({'status': 'success', 'stats': get_stats(), 'has_history': db_session.query(DBUndoEvent).count() > 0})
+        db_video = db_session.query(DBVideo).filter_by(filename=filename).first()
+        deleted_files = delete_video_files(filename)
+        if db_video or deleted_files > 0:
+            return jsonify({
+                'status': 'success',
+                'deleted_files': deleted_files,
+                'stats': get_stats(),
+                'has_history': db_session.query(DBUndoEvent).count() > 0
+            })
     except Exception as e:
-        db_session.rollback()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({'status': 'error', 'message': 'Failed to delete video file: ' + str(e)}), 500
         
     return jsonify({'status': 'error', 'message': 'Video not found'}), 404
+
+@app.route('/api/delete_false_alarm_videos', methods=['POST'])
+def delete_false_alarm_videos():
+    try:
+        videos = db_session.query(DBVideo).filter_by(classification='false_positive').all()
+        deleted_files = 0
+        deleted_videos = 0
+        for video in videos:
+            removed = delete_video_files(video.filename)
+            if removed > 0:
+                deleted_videos += 1
+                deleted_files += removed
+        return jsonify({
+            'status': 'success',
+            'deleted_videos': deleted_videos,
+            'deleted_files': deleted_files,
+            'stats': get_stats(),
+            'has_history': db_session.query(DBUndoEvent).count() > 0
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': 'Failed to delete false alarm videos: ' + str(e)}), 500
 
 @app.route('/api/classify_video', methods=['POST'])
 def classify_video():
