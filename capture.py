@@ -9,11 +9,17 @@ import datetime
 import subprocess
 import json
 import shutil
+import math
 
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30
 START_HOUR = 6
 END_HOUR = 20
+DAYLIGHT_MODE = "sun"
+DAYLIGHT_LATITUDE = 38.9586
+DAYLIGHT_LONGITUDE = -77.3570
+SUNRISE_OFFSET_MINUTES = 0
+SUNSET_OFFSET_MINUTES = 0
 ROTATION = 0
 ROI = "0.05,0.15,0.3,0.3"
 VIDEO_ROI = "0.0,0.0,0.6,0.6"
@@ -62,13 +68,111 @@ def get_eastern_time():
     offset = 4 if is_dst_eastern(utc_now) else 5
     return utc_now - datetime.timedelta(hours=offset)
 
+def get_eastern_utc_offset_hours(dt):
+    return 4 if is_dst_eastern(dt) else 5
+
+def normalize_degrees(value):
+    return value % 360.0
+
+def normalize_hours(value):
+    return value % 24.0
+
+def calculate_sun_time(local_date, latitude, longitude, is_sunrise):
+    day_of_year = local_date.timetuple().tm_yday
+    lng_hour = longitude / 15.0
+    approx_hour = 6.0 if is_sunrise else 18.0
+    t = day_of_year + ((approx_hour - lng_hour) / 24.0)
+
+    mean_anomaly = (0.9856 * t) - 3.289
+    true_longitude = normalize_degrees(
+        mean_anomaly
+        + (1.916 * math.sin(math.radians(mean_anomaly)))
+        + (0.020 * math.sin(math.radians(2 * mean_anomaly)))
+        + 282.634
+    )
+
+    right_ascension = math.degrees(math.atan(0.91764 * math.tan(math.radians(true_longitude))))
+    right_ascension = normalize_degrees(right_ascension)
+    longitude_quadrant = math.floor(true_longitude / 90.0) * 90.0
+    ascension_quadrant = math.floor(right_ascension / 90.0) * 90.0
+    right_ascension = (right_ascension + longitude_quadrant - ascension_quadrant) / 15.0
+
+    sin_declination = 0.39782 * math.sin(math.radians(true_longitude))
+    cos_declination = math.cos(math.asin(sin_declination))
+    zenith = 90.833
+    cos_hour_angle = (
+        math.cos(math.radians(zenith))
+        - (sin_declination * math.sin(math.radians(latitude)))
+    ) / (cos_declination * math.cos(math.radians(latitude)))
+
+    if cos_hour_angle > 1:
+        return None
+    if cos_hour_angle < -1:
+        return None
+
+    if is_sunrise:
+        hour_angle = 360.0 - math.degrees(math.acos(cos_hour_angle))
+    else:
+        hour_angle = math.degrees(math.acos(cos_hour_angle))
+    hour_angle /= 15.0
+
+    local_mean_time = hour_angle + right_ascension - (0.06571 * t) - 6.622
+    utc_hour = normalize_hours(local_mean_time - lng_hour)
+    utc_midnight = datetime.datetime(local_date.year, local_date.month, local_date.day)
+    utc_dt = utc_midnight + datetime.timedelta(hours=utc_hour)
+    offset = get_eastern_utc_offset_hours(utc_dt)
+    local_dt = utc_dt - datetime.timedelta(hours=offset)
+    while local_dt.date() < local_date:
+        local_dt += datetime.timedelta(days=1)
+    while local_dt.date() > local_date:
+        local_dt -= datetime.timedelta(days=1)
+    return local_dt
+
+def clamp_hour(value, default_value):
+    try:
+        return max(0, min(23, int(value)))
+    except Exception:
+        return default_value
+
+def get_daylight_window(dt):
+    if DAYLIGHT_MODE == "fixed":
+        start_hour = clamp_hour(START_HOUR, 6)
+        end_hour = clamp_hour(END_HOUR, 20)
+        start = dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        end = dt.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+        if end <= start:
+            end += datetime.timedelta(days=1)
+        return start, end, "fixed"
+
+    sunrise = calculate_sun_time(dt.date(), DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE, True)
+    sunset = calculate_sun_time(dt.date(), DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE, False)
+    if sunrise is None or sunset is None:
+        start = dt.replace(hour=clamp_hour(START_HOUR, 6), minute=0, second=0, microsecond=0)
+        end = dt.replace(hour=clamp_hour(END_HOUR, 20), minute=0, second=0, microsecond=0)
+        return start, end, "fixed-fallback"
+
+    sunrise += datetime.timedelta(minutes=SUNRISE_OFFSET_MINUTES)
+    sunset += datetime.timedelta(minutes=SUNSET_OFFSET_MINUTES)
+    return sunrise, sunset, "sun"
+
 def is_daylight(dt):
-    return START_HOUR <= dt.hour < END_HOUR
+    start, end, _source = get_daylight_window(dt)
+    return start <= dt < end
+
+def get_next_daylight_start(dt):
+    start, end, source = get_daylight_window(dt)
+    if dt < start:
+        return start, source
+    tomorrow = dt + datetime.timedelta(days=1)
+    next_start, _next_end, next_source = get_daylight_window(tomorrow)
+    return next_start, next_source
 
 def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
+    global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
+    global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
     import urllib.request
 
     url = "http://{0}:5001/api/settings".format(MAC_IP)
@@ -110,12 +214,31 @@ def fetch_config_from_mac():
                     MOTION_THRESHOLD = float(settings['motion_threshold'])
                 if 'motion_force_interval' in settings:
                     MOTION_FORCE_INTERVAL_SECONDS = int(settings['motion_force_interval'])
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoROI={13}, Threshold={14:.2f}".format(
+                if 'daylight_mode' in settings:
+                    mode = str(settings['daylight_mode']).strip().lower()
+                    DAYLIGHT_MODE = mode if mode in ("sun", "fixed") else "sun"
+                if 'daylight_latitude' in settings:
+                    DAYLIGHT_LATITUDE = float(settings['daylight_latitude'])
+                if 'daylight_longitude' in settings:
+                    DAYLIGHT_LONGITUDE = float(settings['daylight_longitude'])
+                if 'daylight_start_hour' in settings:
+                    START_HOUR = clamp_hour(settings['daylight_start_hour'], START_HOUR)
+                if 'daylight_end_hour' in settings:
+                    END_HOUR = clamp_hour(settings['daylight_end_hour'], END_HOUR)
+                if 'sunrise_offset_minutes' in settings:
+                    SUNRISE_OFFSET_MINUTES = int(settings['sunrise_offset_minutes'])
+                if 'sunset_offset_minutes' in settings:
+                    SUNSET_OFFSET_MINUTES = int(settings['sunset_offset_minutes'])
+                daylight_start, daylight_end, daylight_source = get_daylight_window(get_eastern_time())
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoROI={13}, Threshold={14:.2f}, Daylight={15} {16}-{17}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     WIDTH, HEIGHT, REVIEW_JPEG_QUALITY,
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
-                    ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
+                    ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD,
+                    daylight_source,
+                    daylight_start.strftime("%H:%M"),
+                    daylight_end.strftime("%H:%M")
                 ))
     except Exception as e:
         print("[Config] Could not sync dynamic settings from Mac: {0}".format(e))
@@ -383,13 +506,15 @@ def capture_image():
 
 def main():
     print("Starting Squirrel Soaker 9001 capture & inference loop...")
-    print("Analysis interval: {0}s, save interval: {1}s, Range: {2}:00 - {3}:00 Eastern".format(
-        ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, START_HOUR, END_HOUR
+    print("Analysis interval: {0}s, save interval: {1}s, daylight mode: {2}".format(
+        ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, DAYLIGHT_MODE
     ))
 
     while True:
         try:
+            fetch_config_from_mac()
             local_time = get_eastern_time()
+            daylight_start, daylight_end, daylight_source = get_daylight_window(local_time)
             if is_daylight(local_time):
                 started_at = time.time()
                 capture_image()
@@ -397,14 +522,16 @@ def main():
                 time.sleep(max(0.0, ANALYSIS_INTERVAL_SECONDS - elapsed))
             else:
                 now = get_eastern_time()
-                target = now.replace(hour=START_HOUR, minute=0, second=0, microsecond=0)
-                if now >= target:
-                    target += datetime.timedelta(days=1)
+                target, target_source = get_next_daylight_start(now)
                 seconds_to_wait = (target - now).total_seconds()
-                print("[{0}] Nighttime. Sleeping for {1:.1f} hours until {2}...".format(
+                print("[{0}] Nighttime ({1}: {2}-{3}). Sleeping for {4:.1f} hours until {5} ({6})...".format(
                     now.strftime("%Y-%m-%d %H:%M:%S"),
+                    daylight_source,
+                    daylight_start.strftime("%H:%M"),
+                    daylight_end.strftime("%H:%M"),
                     seconds_to_wait / 3600.0,
-                    target.strftime("%Y-%m-%d %H:%M:%S")
+                    target.strftime("%Y-%m-%d %H:%M:%S"),
+                    target_source
                 ))
                 time.sleep(min(seconds_to_wait, 3600))
         except KeyboardInterrupt:
