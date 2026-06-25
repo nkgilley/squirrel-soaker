@@ -1782,6 +1782,35 @@ HTML_TEMPLATE = """
             font-family: monospace;
         }
 
+        .confidence-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+            margin-top: 0.45rem;
+            padding: 0.28rem 0.55rem;
+            border-radius: 8px;
+            border: 1px solid rgba(34, 211, 238, 0.35);
+            background: rgba(34, 211, 238, 0.1);
+            color: #bae6fd;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.75rem;
+            line-height: 1.1;
+            white-space: nowrap;
+        }
+
+        .confidence-badge span {
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-size: 0.62rem;
+            letter-spacing: 0;
+        }
+
+        .confidence-badge strong {
+            color: #e0f2fe;
+            font-weight: 700;
+        }
+
         .action-buttons {
             display: flex;
             gap: 1.5rem;
@@ -1954,6 +1983,20 @@ HTML_TEMPLATE = """
             overflow: hidden;
             white-space: nowrap;
             text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .gallery-card-info .confidence-badge {
+            margin-top: 0;
+        }
+
+        .gallery-filename {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .pagination-container {
@@ -2563,6 +2606,7 @@ HTML_TEMPLATE = """
 
     <script>
         let currentImage = null; // Used in queue mode
+        let currentImageConfidence = null;
         let viewMode = 'dashboard';
         let reverseOrder = true;
         let rtspEnabled = false;
@@ -2571,6 +2615,7 @@ HTML_TEMPLATE = """
 
         // Gallery & Video variables
         let galleryImages = []; // List of images on the current page
+        let galleryImageMeta = {};
         let currentPage = 1;
         let totalPages = 1;
         let galleryTotalCount = 0;
@@ -2627,6 +2672,22 @@ HTML_TEMPLATE = """
                 if (targetIdx >= totalCount) targetIdx = totalCount - 1;
                 loadNext('', targetIdx);
             }
+        }
+
+        function formatConfidence(value) {
+            if (value === undefined || value === null || value === '') return 'Confidence: n/a';
+            const num = Number(value);
+            if (Number.isNaN(num)) return 'Confidence: n/a';
+            return `Confidence: ${(num * 100).toFixed(1)}%`;
+        }
+
+        function confidenceBadge(value, compact = false) {
+            return `
+                <div class="confidence-badge" title="Classifier confidence for the saved decision">
+                    ${compact ? '' : '<span>Model</span>'}
+                    <strong>${formatConfidence(value).replace('Confidence: ', '')}</strong>
+                </div>
+            `;
         }
 
         function setViewMode(mode) {
@@ -4263,6 +4324,7 @@ HTML_TEMPLATE = """
                 
                 if (data.image) {
                     currentImage = data.image;
+                    currentImageConfidence = data.confidence;
                     currentIndex = data.index;
                     totalCount = data.total;
                     
@@ -4273,6 +4335,7 @@ HTML_TEMPLATE = """
                         <div class="image-filename" style="margin-top: 1rem; font-family: monospace; font-size: 0.9rem; color: var(--text-secondary); text-align: center;">
                             ${data.image}
                         </div>
+                        ${confidenceBadge(currentImageConfidence)}
                         
                         <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.75rem;">
                             <button class="btn" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="navigatePage(-1)" ${currentIndex === 0 ? 'disabled' : ''}>&lt; Prev</button>
@@ -4290,6 +4353,7 @@ HTML_TEMPLATE = """
                     `;
                 } else {
                     currentImage = null;
+                    currentImageConfidence = null;
                     currentIndex = 0;
                     totalCount = 0;
                     workspace.innerHTML = `
@@ -4315,6 +4379,7 @@ HTML_TEMPLATE = """
                 currentPage = data.page;
                 totalPages = data.total_pages;
                 galleryImages = data.images;
+                galleryImageMeta = data.image_meta || {};
                 galleryTotalCount = data.total_images;
                 
                 const workspace = document.getElementById('workspace-card');
@@ -4339,7 +4404,10 @@ HTML_TEMPLATE = """
                             <div class="gallery-card" onclick="openImageModal(${idx})">
                                 <div class="card-actions-overlay">${overlayButtons}</div>
                                 <img src="/api/thumbnail/${img}" alt="Still preview">
-                                <div class="gallery-card-info">${img}</div>
+                                <div class="gallery-card-info">
+                                    <span class="gallery-filename">${img}</span>
+                                    ${confidenceBadge(galleryImageMeta[img]?.confidence, true)}
+                                </div>
                             </div>
                         `;
                     });
@@ -4712,8 +4780,12 @@ HTML_TEMPLATE = """
         function updateModalContent() {
             if (modalIndex < 0 || modalIndex >= galleryImages.length) return;
             const img = galleryImages[modalIndex];
+            const meta = galleryImageMeta[img] || {};
             document.getElementById('modal-img-element').src = `/image/${img}`;
-            document.getElementById('modal-img-filename').innerText = img;
+            document.getElementById('modal-img-filename').innerHTML = `
+                <div>${img}</div>
+                ${confidenceBadge(meta.confidence)}
+            `;
             document.getElementById('modal-image-counter').innerText = `Image ${(currentPage - 1) * 12 + modalIndex + 1} of ${galleryTotalCount}`;
             
             document.getElementById('modal-prev-btn').disabled = (currentPage === 1 && modalIndex === 0);
@@ -5256,9 +5328,16 @@ def next_image():
             query = query.order_by(DBImage.filename.asc())
         db_images = query.all()
         files = [img.filename for img in db_images]
+        image_meta = {
+            img.filename: {
+                'confidence': img.prediction_confidence
+            }
+            for img in db_images
+        }
     except Exception as e:
         print("Error getting images for next_image:", e)
         files = []
+        image_meta = {}
         
     image = None
     current_idx = 0
@@ -5287,6 +5366,7 @@ def next_image():
             
     return jsonify({
         'image': image,
+        'confidence': image_meta.get(image, {}).get('confidence') if image else None,
         'index': current_idx,
         'total': total,
         'stats': get_stats(),
@@ -5331,14 +5411,22 @@ def list_images():
         offset = (page - 1) * per_page
         page_imgs = query.offset(offset).limit(per_page).all()
         page_files = [img.filename for img in page_imgs]
+        image_meta = {
+            img.filename: {
+                'confidence': img.prediction_confidence
+            }
+            for img in page_imgs
+        }
     except Exception as e:
         print("Error listing images from DB:", e)
         page_files = []
+        image_meta = {}
         total_images = 0
         total_pages = 1
         
     return jsonify({
         'images': page_files,
+        'image_meta': image_meta,
         'page': page,
         'per_page': per_page,
         'total_images': total_images,
