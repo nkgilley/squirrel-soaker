@@ -456,14 +456,23 @@ def capture_image():
 
         result = check_for_squirrel(filename, img_data, should_save=should_save)
         last_analysis_sent_time = now_seconds
-        is_squirrel = result.get('is_squirrel', False)
+        is_squirrel = result.get('detected_squirrel', result.get('is_squirrel', False))
+        should_spray = result.get('should_spray', result.get('is_squirrel', False))
         confidence = result.get('confidence', 0.0)
         spray_duration = result.get('spray_duration', 3.0)
-        if is_squirrel and confidence > CONFIDENCE_THRESHOLD:
-            print("[Inference] SQUIRREL DETECTED! Confidence: {0:.1f}%. Triggering spray for {1}s.".format(confidence * 100, spray_duration))
+        if should_spray:
+            print("[Inference] SQUIRREL CONFIRMED! Confidence: {0:.1f}%. Triggering spray for {1}s.".format(confidence * 100, spray_duration))
             trigger_spray_locally(spray_duration)
         else:
-            print("[Inference] No squirrel detected. Confidence: {0:.1f}%".format(confidence * 100))
+            decision = result.get('spray_decision', {})
+            if is_squirrel and decision:
+                print("[Inference] Squirrel detected, waiting for decision gate: {0}/{1} hits, avg {2:.1f}%.".format(
+                    decision.get('hits', 0),
+                    decision.get('required_hits', 1),
+                    float(decision.get('average_confidence', 0.0)) * 100
+                ))
+            else:
+                print("[Inference] No squirrel detected. Confidence: {0:.1f}%".format(confidence * 100))
 
         if confidence > 0.0:
             if should_save:

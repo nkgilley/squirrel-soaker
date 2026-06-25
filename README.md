@@ -185,6 +185,7 @@ Important settings:
 - **Video ROI**: crop used for spray event videos.
 - **Camera Rotation**: Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
+- **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
 Camera calibration lives in the Settings view. The green calibration box maps to the full camera frame and should represent the actual still-photo ROI used by the Pi.
@@ -207,6 +208,8 @@ Main views:
 - **Videos**: review spray event recordings.
 - **Training**: retrain the model and hot-reload weights when training completes.
 - **Settings**: configure camera cadence, image quality, ROI calibration, thresholds, motion prefilter, and automation behavior.
+
+When a spray video is marked as a false positive, the app extracts several frames into `data/dataset/not_squirrel` as hard-negative examples. Starting training also backfills hard negatives from all currently marked false-positive videos before launching `train.py`.
 
 Dashboard health graph:
 

@@ -412,6 +412,9 @@ default_settings = {
     'camera_roi': '0.05,0.15,0.3,0.3',
     'video_roi': '0.0,0.0,0.6,0.6',
     'confidence_threshold': 0.70,
+    'spray_decision_required_hits': 2,
+    'spray_decision_window_seconds': 12,
+    'spray_decision_average_confidence': 0.75,
     'spray_cooldown_seconds': 60,
     'notification_type': 'join',
     'public_base_url': PUBLIC_BASE_URL,
@@ -492,6 +495,8 @@ latest_pi_status = {}
 latest_predict_metrics = {}
 health_history = deque(maxlen=720)
 telemetry_lock = threading.Lock()
+detection_history = deque()
+detection_history_lock = threading.Lock()
 
 def add_health_sample(source, pi=None, predict=None):
     pi = pi or {}
@@ -511,6 +516,36 @@ def add_health_sample(source, pi=None, predict=None):
         'confidence': predict.get('confidence') if predict.get('confidence') is not None else pi.get('confidence')
     }
     health_history.append(sample)
+
+def get_spray_decision(is_squirrel, confidence, settings, now_time=None):
+    now_time = now_time or time.time()
+    threshold = float(settings.get('confidence_threshold', 0.70))
+    window_seconds = max(1.0, float(settings.get('spray_decision_window_seconds', 12)))
+    required_hits = max(1, int(settings.get('spray_decision_required_hits', 2)))
+    average_threshold = float(settings.get('spray_decision_average_confidence', threshold))
+
+    with detection_history_lock:
+        while detection_history and now_time - detection_history[0]['t'] > window_seconds:
+            detection_history.popleft()
+
+        if is_squirrel and confidence >= threshold:
+            detection_history.append({'t': now_time, 'confidence': confidence})
+
+        hits = list(detection_history)
+        avg_confidence = sum(hit['confidence'] for hit in hits) / len(hits) if hits else 0.0
+        ready = len(hits) >= required_hits and avg_confidence >= average_threshold
+
+        if ready:
+            detection_history.clear()
+
+    return {
+        'ready': ready,
+        'hits': len(hits),
+        'required_hits': required_hits,
+        'window_seconds': window_seconds,
+        'average_confidence': avg_confidence,
+        'average_threshold': average_threshold
+    }
 
 def get_local_base_url():
     settings = load_settings()
@@ -825,6 +860,95 @@ def delete_video_files(filename):
             os.remove(path)
             deleted += 1
     return deleted
+
+def extract_false_alarm_training_frames(video_name, max_frames=6):
+    safe_name = os.path.basename(video_name)
+    if safe_name != video_name:
+        raise ValueError("Invalid video filename")
+
+    video_path = os.path.join(VIDEOS_DIR, safe_name)
+    if not os.path.exists(video_path):
+        return {'created': 0, 'skipped': 1, 'reason': 'missing_video'}
+
+    try:
+        import cv2
+    except Exception as e:
+        return {'created': 0, 'skipped': 1, 'reason': 'opencv_unavailable: {0}'.format(e)}
+
+    os.makedirs(NOT_SQUIRREL_DIR, exist_ok=True)
+    stem = os.path.splitext(safe_name)[0]
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return {'created': 0, 'skipped': 1, 'reason': 'open_failed'}
+
+    try:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frame_count <= 0:
+            return {'created': 0, 'skipped': 1, 'reason': 'empty_video'}
+
+        sample_count = max(1, min(int(max_frames), frame_count))
+        if sample_count == 1:
+            frame_indices = [frame_count // 2]
+        else:
+            frame_indices = [
+                int(round((frame_count - 1) * (idx + 1) / (sample_count + 1)))
+                for idx in range(sample_count)
+            ]
+
+        created = 0
+        for idx, frame_idx in enumerate(frame_indices):
+            out_name = "false_alarm_{0}_{1:02d}.jpg".format(stem, idx + 1)
+            out_path = os.path.join(NOT_SQUIRREL_DIR, out_name)
+            if os.path.exists(out_path):
+                continue
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+
+            if not cv2.imwrite(out_path, frame):
+                continue
+
+            captured_at = get_video_timestamp(safe_name) or datetime.datetime.now()
+            try:
+                db_img = db_session.query(DBImage).filter_by(filename=out_name).first()
+                if not db_img:
+                    db_session.add(DBImage(
+                        filename=out_name,
+                        category='not_squirrel',
+                        captured_at=captured_at,
+                        prediction_confidence=None,
+                        is_auto_classified=True
+                    ))
+                created += 1
+            except Exception as e:
+                db_session.rollback()
+                log_message("[False Alarm Training] DB insert failed for {0}: {1}".format(out_name, e))
+        if created > 0:
+            db_session.commit()
+        return {'created': created, 'skipped': 0, 'reason': None}
+    finally:
+        cap.release()
+
+def extract_all_false_alarm_training_frames(max_frames=6):
+    videos = db_session.query(DBVideo).filter_by(classification='false_positive').all()
+    total_created = 0
+    missing = 0
+    processed = 0
+    for video in videos:
+        result = extract_false_alarm_training_frames(video.filename, max_frames=max_frames)
+        total_created += result.get('created', 0)
+        if result.get('reason') == 'missing_video':
+            missing += 1
+        else:
+            processed += 1
+    return {
+        'processed': processed,
+        'missing': missing,
+        'created': total_created,
+        'total_false_alarms': len(videos)
+    }
 
 def clean_not_squirrel_directory(not_squirrel_dir, retention_days, min_count):
     if not os.path.exists(not_squirrel_dir):
@@ -3224,7 +3348,26 @@ HTML_TEMPLATE = """
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">SQUIRREL Detection Confidence Threshold</label>
                         <input type="number" id="settings-confidence" min="0.50" max="0.99" step="0.05" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Model probability threshold (0.50 - 0.99) required to trigger a water blast. Default: 0.70.</span>
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Model probability threshold (0.50 - 0.99) for a qualifying squirrel detection. Default: 0.70.</span>
+                    </div>
+
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Spray Decision Gate</h3>
+                        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Required Hits</label>
+                                <input type="number" id="settings-decision-hits" min="1" max="5" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Window Seconds</label>
+                                <input type="number" id="settings-decision-window" min="3" max="60" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Average Confidence</label>
+                                <input type="number" id="settings-decision-average" min="0.50" max="0.99" step="0.05" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                        </div>
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Detection can be true without spraying; spraying waits for repeated high-confidence hits in this window.</span>
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
@@ -3500,6 +3643,9 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-roi').value = data.settings.camera_roi;
                     document.getElementById('settings-video-roi').value = data.settings.video_roi || '';
                     document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
+                    document.getElementById('settings-decision-hits').value = data.settings.spray_decision_required_hits ?? 2;
+                    document.getElementById('settings-decision-window').value = data.settings.spray_decision_window_seconds ?? 12;
+                    document.getElementById('settings-decision-average').value = data.settings.spray_decision_average_confidence ?? 0.75;
                     document.getElementById('settings-cooldown').value = data.settings.spray_cooldown_seconds || 60;
                     document.getElementById('settings-spray-duration').value = data.settings.spray_duration || 3.0;
                     document.getElementById('settings-long-duration').value = data.settings.long_spray_duration || 5.0;
@@ -3584,6 +3730,9 @@ HTML_TEMPLATE = """
             const camera_roi = document.getElementById('settings-roi').value;
             const video_roi = document.getElementById('settings-video-roi').value;
             const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
+            const spray_decision_required_hits = parseInt(document.getElementById('settings-decision-hits').value);
+            const spray_decision_window_seconds = parseInt(document.getElementById('settings-decision-window').value);
+            const spray_decision_average_confidence = parseFloat(document.getElementById('settings-decision-average').value);
             const spray_cooldown_seconds = parseInt(document.getElementById('settings-cooldown').value);
             const spray_duration = parseFloat(document.getElementById('settings-spray-duration').value);
             const long_spray_duration = parseFloat(document.getElementById('settings-long-duration').value);
@@ -3630,6 +3779,9 @@ HTML_TEMPLATE = """
                         camera_roi,
                         video_roi,
                         confidence_threshold,
+                        spray_decision_required_hits,
+                        spray_decision_window_seconds,
+                        spray_decision_average_confidence,
                         spray_cooldown_seconds,
                         spray_duration,
                         long_spray_duration,
@@ -3708,6 +3860,9 @@ HTML_TEMPLATE = """
                     <button id="start-train-btn" class="btn" style="background-color: var(--color-sync); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);" onclick="startTraining()">
                         <span class="spinner" id="train-spinner" style="display: none; border-left-color: white;"></span>
                         <span class="btn-text" id="train-btn-text">Start Training 🚀</span>
+                    </button>
+                    <button id="false-alarm-train-btn" class="btn" style="margin-left: 0.5rem; background-color: transparent; border: 1px solid var(--color-delete); color: var(--color-delete);" onclick="prepareFalseAlarmTraining()">
+                        Build False Alarm Negatives
                     </button>
                 </div>
 
@@ -3813,6 +3968,33 @@ HTML_TEMPLATE = """
                 }
             } catch (e) {
                 console.error("Error starting training:", e);
+            }
+        }
+
+        async function prepareFalseAlarmTraining() {
+            const btn = document.getElementById('false-alarm-train-btn');
+            const originalText = btn ? btn.innerText : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.innerText = 'Building...';
+            }
+            try {
+                const res = await fetch('/api/train/false_alarms', { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    const result = data.result || {};
+                    alert(`Created ${result.created || 0} hard-negative frames from ${result.processed || 0} false-alarm videos.`);
+                    checkTrainStatus();
+                } else {
+                    alert(data.message);
+                }
+            } catch (e) {
+                console.error("Error preparing false alarm training data:", e);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerText = originalText || 'Build False Alarm Negatives';
+                }
             }
         }
 
@@ -5291,11 +5473,15 @@ def delete_video():
         
     try:
         db_video = db_session.query(DBVideo).filter_by(filename=filename).first()
+        false_alarm_training = None
+        if db_video and db_video.classification == 'false_positive':
+            false_alarm_training = extract_false_alarm_training_frames(filename)
         deleted_files = delete_video_files(filename)
         if db_video or deleted_files > 0:
             return jsonify({
                 'status': 'success',
                 'deleted_files': deleted_files,
+                'false_alarm_training': false_alarm_training,
                 'stats': get_stats(),
                 'has_history': db_session.query(DBUndoEvent).count() > 0
             })
@@ -5310,7 +5496,19 @@ def delete_false_alarm_videos():
         videos = db_session.query(DBVideo).filter_by(classification='false_positive').all()
         deleted_files = 0
         deleted_videos = 0
+        false_alarm_training = {
+            'processed': 0,
+            'missing': 0,
+            'created': 0,
+            'total_false_alarms': len(videos)
+        }
         for video in videos:
+            result = extract_false_alarm_training_frames(video.filename)
+            false_alarm_training['created'] += result.get('created', 0)
+            if result.get('reason') == 'missing_video':
+                false_alarm_training['missing'] += 1
+            else:
+                false_alarm_training['processed'] += 1
             removed = delete_video_files(video.filename)
             if removed > 0:
                 deleted_videos += 1
@@ -5319,6 +5517,7 @@ def delete_false_alarm_videos():
             'status': 'success',
             'deleted_videos': deleted_videos,
             'deleted_files': deleted_files,
+            'false_alarm_training': false_alarm_training,
             'stats': get_stats(),
             'has_history': db_session.query(DBUndoEvent).count() > 0
         })
@@ -5352,10 +5551,18 @@ def classify_video():
             )
             db_session.add(db_vid)
         db_session.commit()
+        false_alarm_training = None
+        if classification == 'false_positive':
+            false_alarm_training = extract_false_alarm_training_frames(video_name)
+            if false_alarm_training.get('created', 0) > 0:
+                log_message("[False Alarm Training] Added {0} hard-negative frames from {1}".format(
+                    false_alarm_training['created'], video_name
+                ))
         return jsonify({
             'status': 'success',
             'stats': get_stats(),
-            'has_history': db_session.query(DBUndoEvent).count() > 0
+            'has_history': db_session.query(DBUndoEvent).count() > 0,
+            'false_alarm_training': false_alarm_training
         })
     except Exception as e:
         db_session.rollback()
@@ -5990,7 +6197,10 @@ def api_health():
             'camera_roi': settings.get('camera_roi'),
             'video_roi': settings.get('video_roi'),
             'camera_rotation': settings.get('camera_rotation'),
-            'confidence_threshold': settings.get('confidence_threshold')
+            'confidence_threshold': settings.get('confidence_threshold'),
+            'spray_decision_required_hits': settings.get('spray_decision_required_hits'),
+            'spray_decision_window_seconds': settings.get('spray_decision_window_seconds'),
+            'spray_decision_average_confidence': settings.get('spray_decision_average_confidence')
         }
     })
 
@@ -6022,9 +6232,15 @@ def start_training():
         
     # Clear the log file
     log_path = os.path.join(BASE_DIR, 'data', 'train.log')
+    false_alarm_training = extract_all_false_alarm_training_frames()
     try:
         with open(log_path, 'w') as f:
             f.write("Initializing local retraining...\n")
+            f.write("False alarm hard negatives: created {0} frames from {1} available videos ({2} missing/deleted videos skipped).\n".format(
+                false_alarm_training['created'],
+                false_alarm_training['processed'],
+                false_alarm_training['missing']
+            ))
     except Exception as e:
         log_message("Error clearing train.log: {0}".format(e))
         
@@ -6036,11 +6252,26 @@ def start_training():
         model_reloaded = False
         training_process = subprocess.Popen(
             [sys.executable, '-u', train_script],
-            stdout=open(log_path, 'w'),
+            stdout=open(log_path, 'a'),
             stderr=subprocess.STDOUT
         )
         log_message("[Training] Started background training subprocess (PID: {0})".format(training_process.pid))
-        return jsonify({'status': 'success', 'message': 'Training started.'})
+        return jsonify({
+            'status': 'success',
+            'message': 'Training started.',
+            'false_alarm_training': false_alarm_training
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/train/false_alarms', methods=['POST'])
+def train_false_alarms():
+    try:
+        result = extract_all_false_alarm_training_frames()
+        log_message("[False Alarm Training] Backfill complete: created {0} frames from {1} videos; skipped {2} missing/deleted videos.".format(
+            result['created'], result['processed'], result['missing']
+        ))
+        return jsonify({'status': 'success', 'result': result, 'stats': get_stats()})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -6173,15 +6404,11 @@ def predict():
     threshold = float(settings.get('confidence_threshold', 0.70))
     cooldown = float(settings.get('spray_cooldown_seconds', 60))
     cooldown_active = (current_time - last_spray_time < cooldown)
-    
     meets_threshold = (confidence >= threshold)
-    
-    if automation_enabled and is_squirrel and meets_threshold and not cooldown_active:
-        response_is_squirrel = True
-    else:
-        response_is_squirrel = False
+    decision = get_spray_decision(is_squirrel, confidence, settings, current_time)
+    should_spray = automation_enabled and decision['ready'] and not cooldown_active
 
-    should_save_image = save_requested or response_is_squirrel
+    should_save_image = save_requested or should_spray
     db_img = None
 
     save_started_at = time.time()
@@ -6225,6 +6452,10 @@ def predict():
                 log_message("Error auto-classifying {0}: {1}".format(filename, str(e)))
         else:
             try:
+                if not save_requested and os.path.exists(filepath):
+                    raw_path = os.path.join(RAW_DIR, filename)
+                    shutil.move(filepath, raw_path)
+                    filepath = raw_path
                 if db_img:
                     db_session.commit()
             except Exception as e:
@@ -6240,11 +6471,17 @@ def predict():
         
     duration = get_current_spray_duration()
     
-    if response_is_squirrel:
+    if should_spray:
         if not is_test:
             log_blast('auto', confidence, active_model_name, filename if should_save_image else None)
             last_spray_time = current_time
-            log_message("[Cooldown] Solenoid triggered. Cooldown activated for {0}s.".format(cooldown))
+            log_message("[Spray Decision] {0}/{1} detections in {2:.0f}s, avg confidence {3:.1f}%. Cooldown activated for {4}s.".format(
+                decision['hits'],
+                decision['required_hits'],
+                decision['window_seconds'],
+                decision['average_confidence'] * 100,
+                cooldown
+            ))
     elif is_squirrel and automation_enabled:
         if not meets_threshold:
             log_message("[Prediction] Squirrel detected, but skipping spray because confidence ({0:.1f}%) is below threshold ({1:.1f}%).".format(
@@ -6253,6 +6490,13 @@ def predict():
         elif cooldown_active:
             log_message("[Cooldown] Squirrel detected, but skipping spray because cooldown is active ({0:.1f}s remaining).".format(
                 cooldown - (current_time - last_spray_time)
+            ))
+        elif not decision['ready']:
+            log_message("[Spray Decision] Detection held for confirmation: {0}/{1} hits in {2:.0f}s, avg {3:.1f}%.".format(
+                decision['hits'],
+                decision['required_hits'],
+                decision['window_seconds'],
+                decision['average_confidence'] * 100
             ))
         
     total_ms = (time.time() - request_started_at) * 1000
@@ -6264,7 +6508,9 @@ def predict():
         'save_requested': save_requested,
         'saved': should_save_image,
         'is_squirrel_raw': is_squirrel,
-        'is_squirrel_response': response_is_squirrel,
+        'is_squirrel_response': should_spray,
+        'should_spray': should_spray,
+        'spray_decision': decision,
         'confidence': confidence,
         'write_ms': round(write_ms, 1),
         'normalize_ms': round(normalize_ms, 1),
@@ -6276,11 +6522,14 @@ def predict():
         latest_predict_metrics = metrics
 
     return jsonify({
-        'is_squirrel': response_is_squirrel,
+        'is_squirrel': should_spray,
+        'detected_squirrel': is_squirrel,
+        'should_spray': should_spray,
         'confidence': confidence,
         'filename': filename if should_save_image else None,
         'saved': should_save_image,
         'metrics': metrics,
+        'spray_decision': decision,
         'automation_enabled': automation_enabled,
         'spray_duration': duration
     })
@@ -6523,10 +6772,11 @@ def rtsp_thread_loop():
                         cooldown = float(settings.get('spray_cooldown_seconds', 60))
                         cooldown_active = (now_time - last_spray_time < cooldown)
                         meets_threshold = (confidence >= threshold)
+                        decision = get_spray_decision(is_squirrel, confidence, settings, now_time)
                         
                         if is_squirrel and meets_threshold:
-                            if not cooldown_active:
-                                print("[RTSP-Inference] Squirrel detected! Conf: {:.1f}%. Spraying!".format(confidence*100))
+                            if decision['ready'] and not cooldown_active:
+                                print("[RTSP-Inference] Squirrel confirmed! Conf: {:.1f}%. Spraying!".format(confidence*100))
                                 duration = get_current_spray_duration()
                                 last_spray_time = now_time
                                 log_blast('auto', confidence, active_model_name)
@@ -6554,6 +6804,10 @@ def rtsp_thread_loop():
                                     print("DB save failed:", dbe)
                                     
                                 start_local_video_recording(duration, filename)
+                            elif not decision['ready']:
+                                print("[RTSP-Inference] Squirrel detection held for confirmation: {0}/{1} hits.".format(
+                                    decision['hits'], decision['required_hits']
+                                ))
                             else:
                                 print("[RTSP-Inference] Squirrel found, but skipping spray because cooldown is active.")
                         else:
