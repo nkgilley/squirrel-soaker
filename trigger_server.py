@@ -10,6 +10,7 @@ import datetime
 import subprocess
 import threading
 import shutil
+import fcntl
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 try:
@@ -27,6 +28,7 @@ VIDEO_TMP_DIR = '/dev/shm/squirrel_soaker'
 BACKLOG_MIN_AGE_SECONDS = 45
 VIDEO_START_LEAD_SECONDS = 1.0
 VIDEO_POST_ROLL_SECONDS = 1.0
+CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
 sync_lock = threading.Lock()
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -82,7 +84,7 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None):
         cmd.extend(["-roi", roi])
     return cmd
 
-def record_video(duration_ms=5000, rotation=None, roi=None):
+def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
     import urllib.parse
 
     local_time, default_rot, default_roi = get_local_time_and_defaults()
@@ -99,7 +101,17 @@ def record_video(duration_ms=5000, rotation=None, roi=None):
     print("[Video] Recording {0}s video to RAM at {1}... (rotation={2}, roi={3})".format(duration_ms / 1000.0, filepath, rot, selected_roi))
     try:
         timeout_seconds = int(duration_ms / 1000.0) + 10
-        subprocess.check_call(cmd, timeout=timeout_seconds)
+        lock_file = open(CAMERA_LOCK_FILE, 'w')
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            if started_event:
+                started_event.set()
+            subprocess.check_call(cmd, timeout=timeout_seconds)
+        finally:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
         print("[Video] Finished recording in RAM: {0}".format(filepath))
 
         encoded = urllib.parse.quote(filename)
@@ -121,6 +133,8 @@ def record_video(duration_ms=5000, rotation=None, roi=None):
         except Exception:
             pass
     except Exception as e:
+        if started_event:
+            started_event.set()
         print("[Video] Error recording video: {0}".format(e))
         try:
             if os.path.exists(filepath):
@@ -221,9 +235,12 @@ class TriggerHandler(BaseHTTPRequestHandler):
 
             video_duration_seconds = max(1.0, duration + VIDEO_POST_ROLL_SECONDS)
             video_duration_ms = int(video_duration_seconds * 1000)
-            video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi))
+            video_started = threading.Event()
+            video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi, video_started))
             video_thread.daemon = True
             video_thread.start()
+            if not video_started.wait(5.0):
+                print("[Video] Warning: recorder did not acquire camera lock before spray.")
             if VIDEO_START_LEAD_SECONDS > 0:
                 print("[Video] Giving camera {0:.1f}s head start before solenoid.".format(VIDEO_START_LEAD_SECONDS))
                 time.sleep(VIDEO_START_LEAD_SECONDS)
