@@ -387,8 +387,34 @@ def trigger_spray_locally(duration):
         req = urllib.request.Request(url, method='POST')
         with urllib.request.urlopen(req, timeout=25):
             print("[Trigger] Spray triggered successfully with duration {0}s.".format(duration))
+            return True
     except Exception as e:
         print("[Trigger] Error triggering spray: {0}".format(e))
+    return False
+
+def report_spray_confirm(result, image_filename, duration):
+    import urllib.request
+
+    payload = {
+        'confidence': result.get('confidence'),
+        'duration': duration,
+        'image_filename': result.get('filename') or image_filename,
+        'model_name': result.get('active_model')
+    }
+    try:
+        url = "http://{0}:5001/api/spray_confirm".format(MAC_IP)
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            response.read()
+        print("[Trigger] Reported confirmed spray to Mac.")
+    except Exception as e:
+        print("[Trigger] Could not report confirmed spray to Mac: {0}".format(e))
 
 def capture_image():
     global last_review_save_time, last_analysis_sent_time
@@ -462,7 +488,8 @@ def capture_image():
         spray_duration = result.get('spray_duration', 3.0)
         if should_spray:
             print("[Inference] SQUIRREL CONFIRMED! Confidence: {0:.1f}%. Triggering spray for {1}s.".format(confidence * 100, spray_duration))
-            trigger_spray_locally(spray_duration)
+            if trigger_spray_locally(spray_duration):
+                report_spray_confirm(result, filename, spray_duration)
         else:
             decision = result.get('spray_decision', {})
             if is_squirrel and decision:
