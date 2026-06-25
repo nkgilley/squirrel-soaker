@@ -10,6 +10,7 @@ import subprocess
 import json
 import shutil
 import math
+import fcntl
 
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30
@@ -34,6 +35,7 @@ MOTION_THRESHOLD = 6.0
 MOTION_FORCE_INTERVAL_SECONDS = 30
 RASPISTILL_TIMEOUT_SECONDS = 20
 OUTPUT_DIR = os.path.expanduser('~/squirrel_soaker/captures')
+CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
 MAC_IP = '192.168.86.137'
 
 CONFIDENCE_THRESHOLD = 0.70
@@ -313,13 +315,21 @@ def get_motion_score(img_data):
         return None
 
 def capture_jpeg_bytes(cmd):
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    lock_file = open(CAMERA_LOCK_FILE, 'w')
     try:
-        stdout_data, stderr_data = proc.communicate(timeout=RASPISTILL_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        raise
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            stdout_data, stderr_data = proc.communicate(timeout=RASPISTILL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+    finally:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
 
     if proc.returncode != 0:
         err = stderr_data.decode('utf-8', errors='ignore') if stderr_data else ''
