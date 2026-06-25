@@ -26,6 +26,9 @@ MAC_IP = '192.168.86.137'
 CAPTURES_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 VIDEO_TMP_DIR = '/dev/shm/squirrel_soaker'
 BACKLOG_MIN_AGE_SECONDS = 45
+BACKLOG_MAX_FILES = 300
+BACKLOG_MAX_BYTES = 250 * 1024 * 1024
+BACKLOG_MAX_AGE_SECONDS = 24 * 60 * 60
 VIDEO_START_LEAD_SECONDS = 1.0
 VIDEO_POST_ROLL_SECONDS = 1.0
 CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
@@ -49,6 +52,62 @@ def get_local_time_and_defaults():
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
+
+def get_backlog_files():
+    files = []
+    if not os.path.exists(CAPTURES_DIR):
+        return files
+    for filename in os.listdir(CAPTURES_DIR):
+        lower = filename.lower()
+        if not (lower.endswith('.jpg') or lower.endswith('.jpeg') or lower.endswith('.h264')):
+            continue
+        path = os.path.join(CAPTURES_DIR, filename)
+        if not os.path.isfile(path):
+            continue
+        try:
+            stat = os.stat(path)
+            files.append({
+                'path': path,
+                'filename': filename,
+                'mtime': stat.st_mtime,
+                'size': stat.st_size
+            })
+        except Exception:
+            pass
+    files.sort(key=lambda item: item['mtime'])
+    return files
+
+def prune_backlog(reason='capacity'):
+    now = time.time()
+    files = get_backlog_files()
+    removed = 0
+    removed_bytes = 0
+
+    for info in list(files):
+        if now - info['mtime'] <= BACKLOG_MAX_AGE_SECONDS:
+            continue
+        try:
+            os.remove(info['path'])
+            removed += 1
+            removed_bytes += info['size']
+            files.remove(info)
+        except Exception as e:
+            print("[Backlog] Could not remove expired {0}: {1}".format(info['filename'], e))
+
+    total_bytes = sum(info['size'] for info in files)
+    while files and (len(files) > BACKLOG_MAX_FILES or total_bytes > BACKLOG_MAX_BYTES):
+        info = files.pop(0)
+        try:
+            os.remove(info['path'])
+            removed += 1
+            removed_bytes += info['size']
+            total_bytes -= info['size']
+        except Exception as e:
+            print("[Backlog] Could not prune {0}: {1}".format(info['filename'], e))
+
+    if removed:
+        print("[Backlog] Pruned {0} old backlog files ({1} bytes) because {2}.".format(removed, removed_bytes, reason))
+    return removed
 
 def find_camera_video_command():
     for binary in ('rpicam-vid', 'libcamera-vid', 'raspivid'):
@@ -122,9 +181,11 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
             print("[Video] Uploaded {0} from RAM and removed local copy.".format(filename))
         except Exception as e:
             ensure_dir(CAPTURES_DIR)
+            prune_backlog('before saving a failed video upload')
             backlog_path = os.path.join(CAPTURES_DIR, filename)
             shutil.move(filepath, backlog_path)
             print("[Video] Upload failed ({0}); saved video to SD backlog: {1}".format(e, backlog_path))
+            prune_backlog('after saving a failed video upload')
     except subprocess.TimeoutExpired:
         print("[Video] Error recording video: camera command timed out after {0}s".format(timeout_seconds))
         try:
@@ -170,6 +231,7 @@ def sync_backlog():
 
         uploaded = 0
         failed = 0
+        pruned = prune_backlog('before sync')
         print("[Sync] Scanning for backlog files in {0}...".format(CAPTURES_DIR))
 
         for filename in sorted(os.listdir(CAPTURES_DIR)):
@@ -198,7 +260,8 @@ def sync_backlog():
                 failed += 1
                 print("[Sync] Failed to upload {0}: {1}".format(filename, e))
 
-        print("[Sync] Done. uploaded={0}, failed={1}".format(uploaded, failed))
+        pruned += prune_backlog('after sync')
+        print("[Sync] Done. uploaded={0}, failed={1}, pruned={2}".format(uploaded, failed, pruned))
     finally:
         sync_lock.release()
 
