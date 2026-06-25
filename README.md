@@ -219,6 +219,7 @@ Dashboard health graph:
 - **Predict**: server-side prediction request handling time.
 - **Model**: raw model inference time.
 - **Motion**: frame-to-frame motion score on the secondary axis.
+- **Frame Age**: seconds since the Mac app last received an analyzed frame.
 
 ---
 

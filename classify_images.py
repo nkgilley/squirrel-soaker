@@ -530,10 +530,14 @@ detection_history_lock = threading.Lock()
 def add_health_sample(source, pi=None, predict=None):
     pi = pi or {}
     predict = predict or {}
+    now = time.time()
+    with frame_lock:
+        frame_age = now - latest_frame_time if latest_frame_time else None
     sample = {
-        't': time.time(),
+        't': now,
         'source': source,
         'pi_status': pi.get('status'),
+        'latest_frame_age_seconds': frame_age,
         'loop_ms': pi.get('total_ms'),
         'capture_ms': pi.get('capture_ms'),
         'upload_ms': pi.get('upload_ms'),
@@ -3009,6 +3013,16 @@ HTML_TEMPLATE = """
                             tension: 0.25,
                             spanGaps: true,
                             yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Frame Age',
+                            data: series('latest_frame_age_seconds'),
+                            borderColor: '#22d3ee',
+                            backgroundColor: 'rgba(34, 211, 238, 0.12)',
+                            borderDash: [2, 3],
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y1'
                         }
                     ]
                 };
@@ -3044,7 +3058,7 @@ HTML_TEMPLATE = """
                             y1: {
                                 beginAtZero: true,
                                 position: 'right',
-                                title: { display: true, text: 'motion', color: '#94a3b8' },
+                                title: { display: true, text: 'seconds / motion', color: '#94a3b8' },
                                 grid: { drawOnChartArea: false },
                                 ticks: { color: '#94a3b8', font: { family: 'Outfit' } }
                             }
