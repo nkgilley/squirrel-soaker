@@ -2,6 +2,7 @@ import os
 import time
 import shutil
 import subprocess
+import mimetypes
 from flask import Flask, jsonify, request, send_from_directory, render_template_string
 import threading
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, select, update, delete, text
@@ -97,6 +98,7 @@ def upload_to_catbox(filepath):
         
     boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
     filename = os.path.basename(filepath)
+    content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
     
     try:
         with open(filepath, 'rb') as f:
@@ -109,8 +111,8 @@ def upload_to_catbox(filepath):
             'fileupload\r\n'
             '--{0}\r\n'
             'Content-Disposition: form-data; name="fileToUpload"; filename="{1}"\r\n'
-            'Content-Type: video/mp4\r\n\r\n'
-        ).format(boundary, filename).encode('utf-8')
+            'Content-Type: {2}\r\n\r\n'
+        ).format(boundary, filename, content_type).encode('utf-8')
         
         body += file_content
         body += '\r\n--{0}--\r\n'.format(boundary).encode('utf-8')
@@ -123,10 +125,10 @@ def upload_to_catbox(filepath):
         req = urllib.request.Request('https://catbox.moe/user/api.php', data=body, headers=headers, method='POST')
         with urllib.request.urlopen(req, timeout=20) as res:
             url = res.read().decode('utf-8').strip()
-            log_message("[Upload] Synced video uploaded to catbox.moe: {0}".format(url))
+            log_message("[Upload] Synced file uploaded to catbox.moe: {0}".format(url))
             return url
     except Exception as e:
-        log_message("[Upload] Error uploading video to catbox.moe: {0}".format(e))
+        log_message("[Upload] Error uploading file to catbox.moe: {0}".format(e))
         return None
 
 def upload_to_transfersh(filepath):
@@ -147,10 +149,10 @@ def upload_to_transfersh(filepath):
         )
         with urllib.request.urlopen(req, timeout=20) as res:
             url = res.read().decode('utf-8').strip()
-            log_message("[Upload] Synced video uploaded to transfer.sh: {0}".format(url))
+            log_message("[Upload] Synced file uploaded to transfer.sh: {0}".format(url))
             return url
     except Exception as e:
-        log_message("[Upload] Error uploading video to transfer.sh: {0}".format(e))
+        log_message("[Upload] Error uploading file to transfer.sh: {0}".format(e))
         return None
 
 def upload_to_0x0(filepath):
@@ -162,6 +164,7 @@ def upload_to_0x0(filepath):
         
     boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
     filename = os.path.basename(filepath)
+    content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
     
     try:
         with open(filepath, 'rb') as f:
@@ -171,8 +174,8 @@ def upload_to_0x0(filepath):
         body = (
             '--{0}\r\n'
             'Content-Disposition: form-data; name="file"; filename="{1}"\r\n'
-            'Content-Type: video/mp4\r\n\r\n'
-        ).format(boundary, filename).encode('utf-8')
+            'Content-Type: {2}\r\n\r\n'
+        ).format(boundary, filename, content_type).encode('utf-8')
         
         body += file_content
         body += '\r\n--{0}--\r\n'.format(boundary).encode('utf-8')
@@ -185,13 +188,13 @@ def upload_to_0x0(filepath):
         req = urllib.request.Request('https://0x0.st', data=body, headers=headers, method='POST')
         with urllib.request.urlopen(req, timeout=20) as res:
             url = res.read().decode('utf-8').strip()
-            log_message("[Upload] Synced video uploaded to 0x0.st: {0}".format(url))
+            log_message("[Upload] Synced file uploaded to 0x0.st: {0}".format(url))
             return url
     except Exception as e:
-        log_message("[Upload] Error uploading video to 0x0.st: {0}".format(e))
+        log_message("[Upload] Error uploading file to 0x0.st: {0}".format(e))
         return None
 
-def upload_video_to_public_host(filepath):
+def upload_file_to_public_host(filepath):
     log_message("[Upload] Starting public upload for {0}...".format(os.path.basename(filepath)))
     
     # 1. Try Catbox
@@ -211,6 +214,30 @@ def upload_video_to_public_host(filepath):
         
     log_message("[Upload] All upload providers failed.")
     return None
+
+def upload_video_to_public_host(filepath):
+    return upload_file_to_public_host(filepath)
+
+def resolve_image_path(filename):
+    if not filename:
+        return None
+    safe_filename = os.path.basename(filename)
+    if safe_filename != filename:
+        return None
+    for img_dir in [SQUIRREL_DIR, RAW_DIR, NOT_SQUIRREL_DIR, TRASH_DIR]:
+        img_path = os.path.join(img_dir, safe_filename)
+        if os.path.exists(img_path):
+            return img_path
+    return None
+
+def build_image_url(filename, base_url):
+    image_path = resolve_image_path(filename)
+    if not image_path:
+        return None, None
+    public_url = upload_file_to_public_host(image_path)
+    if public_url:
+        return public_url, image_path
+    return "{0}/image/{1}".format(base_url, filename), image_path
 
 # --- ML Model Configuration ---
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.pth')
@@ -595,7 +622,7 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
     
     title = "🐿️ Squirrel Blasted! 💦"
     base_url = get_local_base_url()
-    image_url = "{0}/image/{1}".format(base_url, image_filename) if image_filename else None
+    image_url, image_path = build_image_url(image_filename, base_url)
 
     if blast_type == 'auto':
         msg = "Automatic repeller triggered a water spray! (Model confidence: {0:.1f}%)".format(confidence * 100 if confidence else 0)
@@ -671,20 +698,16 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
                 # Attach text message
                 mime_msg.attach(MIMEText(msg, 'plain'))
                 
-                if image_filename:
-                    for img_dir in [SQUIRREL_DIR, RAW_DIR, NOT_SQUIRREL_DIR]:
-                        img_path = os.path.join(img_dir, image_filename)
-                        if os.path.exists(img_path):
-                            try:
-                                with open(img_path, 'rb') as attachment:
-                                    part = MIMEBase('image', 'jpeg')
-                                    part.set_payload(attachment.read())
-                                    encoders.encode_base64(part)
-                                    part.add_header('Content-Disposition', 'attachment; filename= {0}'.format(image_filename))
-                                    mime_msg.attach(part)
-                            except Exception as ie:
-                                log_message("[Notification] Error attaching image: {0}".format(ie))
-                            break
+                if image_path and os.path.exists(image_path):
+                    try:
+                        with open(image_path, 'rb') as attachment:
+                            part = MIMEBase('image', 'jpeg')
+                            part.set_payload(attachment.read())
+                            encoders.encode_base64(part)
+                            part.add_header('Content-Disposition', 'attachment; filename= {0}'.format(image_filename))
+                            mime_msg.attach(part)
+                    except Exception as ie:
+                        log_message("[Notification] Error attaching image: {0}".format(ie))
 
                 # Attach video file if available
                 if video_path and os.path.exists(video_path):
