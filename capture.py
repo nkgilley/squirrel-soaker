@@ -8,6 +8,7 @@ import time
 import datetime
 import subprocess
 import json
+import shutil
 
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30
@@ -54,7 +55,10 @@ def is_dst_eastern(dt):
         return 4 <= dt.month <= 10
 
 def get_eastern_time():
-    utc_now = datetime.datetime.utcnow()
+    try:
+        utc_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    except AttributeError:
+        utc_now = datetime.datetime.utcnow()
     offset = 4 if is_dst_eastern(utc_now) else 5
     return utc_now - datetime.timedelta(hours=offset)
 
@@ -207,6 +211,49 @@ def write_backlog_image(filename, img_data):
     print("[Backlog] Wrote {0} to Pi SD because Mac did not accept saved frame.".format(filepath))
     return filepath
 
+def find_camera_still_command():
+    for binary in ('rpicam-still', 'libcamera-still', 'raspistill'):
+        path = shutil.which(binary)
+        if path:
+            return binary
+    return 'raspistill'
+
+def build_still_command(width, height, jpeg_quality):
+    camera_cmd = find_camera_still_command()
+    if camera_cmd in ('rpicam-still', 'libcamera-still'):
+        cmd = [
+            camera_cmd,
+            "--width", str(width),
+            "--height", str(height),
+            "--quality", str(jpeg_quality),
+            "--output", "-",
+            "--timeout", "1000",
+            "--nopreview",
+            "--immediate",
+            "--encoding", "jpg"
+        ]
+        if ROTATION in [0, 180]:
+            cmd.extend(["--rotation", str(ROTATION)])
+        elif ROTATION in [90, 270]:
+            print("[Camera] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, ROTATION))
+        if ROI:
+            cmd.extend(["--roi", ROI])
+        return cmd
+
+    cmd = [
+        camera_cmd,
+        "-w", str(width),
+        "-h", str(height),
+        "-q", str(jpeg_quality),
+        "-o", "-",
+        "-t", "1000"
+    ]
+    if ROTATION in [90, 180, 270]:
+        cmd.extend(["-rot", str(ROTATION)])
+    if ROI:
+        cmd.extend(["-roi", ROI])
+    return cmd
+
 def trigger_spray_locally(duration):
     import urllib.request
     import urllib.parse
@@ -236,18 +283,7 @@ def capture_image():
     capture_height = HEIGHT if should_save else ANALYSIS_HEIGHT
     jpeg_quality = REVIEW_JPEG_QUALITY if should_save else ANALYSIS_JPEG_QUALITY
 
-    cmd = [
-        "raspistill",
-        "-w", str(capture_width),
-        "-h", str(capture_height),
-        "-q", str(jpeg_quality),
-        "-o", "-",
-        "-t", "1000"
-    ]
-    if ROTATION in [90, 180, 270]:
-        cmd.extend(["-rot", str(ROTATION)])
-    if ROI:
-        cmd.extend(["-roi", ROI])
+    cmd = build_still_command(capture_width, capture_height, jpeg_quality)
 
     print("[{0}] Capturing to memory: {1} ({2}x{3} q{4}, save={5})".format(
         local_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -339,7 +375,7 @@ def capture_image():
             'save_interval': SAVE_INTERVAL_SECONDS
         })
     except subprocess.TimeoutExpired:
-        print("Error capturing image: raspistill timed out after {0}s".format(RASPISTILL_TIMEOUT_SECONDS))
+        print("Error capturing image: camera command timed out after {0}s".format(RASPISTILL_TIMEOUT_SECONDS))
     except subprocess.CalledProcessError as e:
         print("Error capturing image: {0}".format(e))
     except Exception as e:
