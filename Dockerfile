@@ -30,4 +30,4 @@ COPY model.pth yolov8n-oiv7.pt* /app/
 EXPOSE 5001
 
 # Run the Flask app using Gunicorn (production WSGI server)
-CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "1", "--threads", "4", "--timeout", "120", "classify_images:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "1", "--threads", "12", "--timeout", "120", "classify_images:app"]

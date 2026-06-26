@@ -3,7 +3,7 @@ import time
 import shutil
 import subprocess
 import mimetypes
-from flask import Flask, jsonify, request, send_from_directory, render_template_string
+from flask import Flask, jsonify, request, send_from_directory, render_template_string, g
 import threading
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, select, update, delete, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
@@ -69,6 +69,24 @@ class DBUndoEvent(Base):
 @app.teardown_appcontext
 def shutdown_session(exception=None):
     db_session.remove()
+
+@app.before_request
+def track_request_start():
+    g.request_started_at = time.time()
+
+@app.after_request
+def log_slow_request(response):
+    started_at = getattr(g, 'request_started_at', None)
+    if started_at is not None:
+        elapsed_ms = (time.time() - started_at) * 1000
+        if elapsed_ms > 2000:
+            print("[Slow Request] {0} {1} -> {2} in {3:.1f} ms".format(
+                request.method,
+                request.path,
+                response.status_code,
+                elapsed_ms
+            ))
+    return response
 
 # Create SQLite tables immediately on import to allow module-level database interactions
 Base.metadata.create_all(bind=engine)
@@ -334,6 +352,43 @@ def load_active_model():
             model = None
             active_model_type = None
 
+def model_predict_resnet_image(img):
+    import torch
+    from torchvision import transforms
+
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    input_tensor = transform(img.convert('RGB')).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        outputs = model(input_tensor)
+        probabilities = torch.softmax(outputs, dim=1)[0]
+        confidence, class_idx = torch.max(probabilities, 0)
+
+        class_name = model_classes[class_idx.item()]
+        is_squirrel = (class_name == 'squirrel')
+        return is_squirrel, confidence.item()
+
+def model_predict_bytes(img_data):
+    global model, active_model_type
+    if model is None:
+        load_active_model()
+        if model is None:
+            return False, 0.0
+    if active_model_type != 'resnet':
+        return None
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(img_data))
+        return model_predict_resnet_image(img)
+    except Exception as e:
+        log_message("Error during in-memory prediction: {0}".format(e))
+        return False, 0.0
+
 def model_predict(filepath):
     global model, model_classes, device, active_model_type, active_model_name
     if model is None:
@@ -358,26 +413,9 @@ def model_predict(filepath):
             return is_squirrel, max_confidence
             
         else:
-            import torch
             from PIL import Image
-            from torchvision import transforms
-            
             img = Image.open(filepath).convert('RGB')
-            transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
-            input_tensor = transform(img).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                outputs = model(input_tensor)
-                probabilities = torch.softmax(outputs, dim=1)[0]
-                confidence, class_idx = torch.max(probabilities, 0)
-                
-                class_name = model_classes[class_idx.item()]
-                is_squirrel = (class_name == 'squirrel')
-                return is_squirrel, confidence.item()
+            return model_predict_resnet_image(img)
     except Exception as e:
         log_message("Error during prediction: {0}".format(e))
         return False, 0.0
@@ -1489,6 +1527,17 @@ def process_synced_videos():
                     print("Generated missing thumbnail for {0}".format(filename))
                 except Exception as e:
                     print("Error generating missing thumbnail for {0}: {1}".format(filename, e))
+
+def process_synced_videos_async():
+    def worker():
+        try:
+            process_synced_videos()
+        finally:
+            db_session.remove()
+    thread = threading.Thread(target=worker)
+    thread.daemon = True
+    thread.start()
+    return thread
 
 def get_video_timestamp(filename):
     import re
@@ -6628,7 +6677,7 @@ def upload_video():
         with open(filepath, 'wb') as f:
             f.write(request.data)
         log_message("[Video Upload] Received raw video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
-        process_synced_videos()
+        process_synced_videos_async()
         return jsonify({'status': 'success'})
     except Exception as e:
         log_message("Error receiving video {0}: {1}".format(filename, str(e)))
@@ -6650,12 +6699,14 @@ def predict():
     import datetime
     now_dt = datetime.datetime.now()
     filename = "img_auto_{0}.jpg".format(now_dt.strftime("%Y%m%d_%H%M%S_%f"))
-    temp_filename = "_temp_predict_{0}.jpg".format(now_dt.strftime("%Y%m%d_%H%M%S_%f"))
-    filepath = os.path.join(RAW_DIR, filename) if save_requested else os.path.join(PREDICT_TMP_DIR, temp_filename)
-    
+    filepath = os.path.join(RAW_DIR, filename)
+    wrote_predict_file = False
+
     write_started_at = time.time()
-    with open(filepath, 'wb') as f:
-        f.write(img_data)
+    if save_requested or active_model_type != 'resnet':
+        with open(filepath, 'wb') as f:
+            f.write(img_data)
+        wrote_predict_file = True
     write_ms = (time.time() - write_started_at) * 1000
 
     normalize_started_at = time.time()
@@ -6666,7 +6717,17 @@ def predict():
         latest_frame_time = time.time()
 
     predict_started_at = time.time()
-    is_squirrel, confidence = model_predict(filepath)
+    if wrote_predict_file:
+        is_squirrel, confidence = model_predict(filepath)
+    else:
+        prediction = model_predict_bytes(img_data)
+        if prediction is None:
+            with open(filepath, 'wb') as f:
+                f.write(img_data)
+            wrote_predict_file = True
+            is_squirrel, confidence = model_predict(filepath)
+        else:
+            is_squirrel, confidence = prediction
     model_ms = (time.time() - predict_started_at) * 1000
             
     current_time = time.time()
@@ -6682,6 +6743,10 @@ def predict():
 
     save_started_at = time.time()
     if should_save_image:
+        if not wrote_predict_file:
+            with open(filepath, 'wb') as f:
+                f.write(img_data)
+            wrote_predict_file = True
         try:
             db_img = db_session.query(DBImage).filter_by(filename=filename).first()
             if not db_img:
@@ -6721,10 +6786,6 @@ def predict():
                 log_message("Error auto-classifying {0}: {1}".format(filename, str(e)))
         else:
             try:
-                if not save_requested and os.path.exists(filepath):
-                    raw_path = os.path.join(RAW_DIR, filename)
-                    shutil.move(filepath, raw_path)
-                    filepath = raw_path
                 if db_img:
                     db_session.commit()
             except Exception as e:
@@ -6732,7 +6793,7 @@ def predict():
                 print("Error committing raw image to DB:", e)
     else:
         try:
-            if os.path.exists(filepath):
+            if wrote_predict_file and os.path.exists(filepath):
                 os.remove(filepath)
         except Exception as e:
             print("Error removing unsaved prediction temp file:", e)
