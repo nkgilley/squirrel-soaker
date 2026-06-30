@@ -56,8 +56,9 @@ Normal operation keeps Pi media in memory:
 2. Raspberry Pi Camera Module configured with the legacy camera stack.
 3. 12V normally closed solenoid valve.
 4. Relay module or transistor circuit so Pi GPIO 17 can control the 12V solenoid.
-5. 12V DC power supply for the solenoid valve.
-6. Tubing and nozzle mounted near the birdfeeder.
+5. Momentary push button wired between Pi GPIO 27 and ground for manual sprays.
+6. 12V DC power supply for the solenoid valve.
+7. Tubing and nozzle mounted near the birdfeeder.
 
 ---
 
@@ -170,6 +171,12 @@ Useful signs in the capture log:
 - `motion_skipped`: motion prefilter avoided inference/upload.
 - `sd_write: false` in health telemetry: normal no-SD-write operation.
 - `Pruned ... old backlog files`: the Pi removed oldest fallback files to protect SD-card space.
+
+Manual hardware spray button:
+
+- Default button pin is GPIO 27, using the Pi's internal pull-up resistor.
+- Wire one side of a normally open momentary button to GPIO 27 and the other side to a Pi ground pin.
+- Pressing the button triggers the same local spray/video path as the web UI. Set `BUTTON_PIN=<BCM pin>` in `squirrel-trigger.service` if you need a different pin.
 
 ---
 

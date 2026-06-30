@@ -21,6 +21,8 @@ except ImportError:
 
 PORT = 8080
 SOLENOID_PIN = 17
+BUTTON_PIN = int(os.environ.get('BUTTON_PIN', '27'))
+BUTTON_BOUNCE_MS = 750
 DEFAULT_SPRAY_DURATION = 3.0
 MAC_IP = '192.168.86.137'
 CAPTURES_DIR = os.path.expanduser('~/squirrel_soaker/captures')
@@ -33,6 +35,7 @@ VIDEO_START_LEAD_SECONDS = 1.0
 VIDEO_POST_ROLL_SECONDS = 1.0
 CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
 sync_lock = threading.Lock()
+spray_lock = threading.Lock()
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -217,6 +220,30 @@ def post_file(url, filepath, content_type, timeout=20):
     with urllib.request.urlopen(req, timeout=timeout) as response:
         response.read()
 
+def report_manual_spray(duration):
+    import json
+    import urllib.request
+
+    payload = {
+        'type': 'manual',
+        'duration': duration,
+        'source': 'button'
+    }
+    try:
+        url = "http://{0}:5001/api/spray_confirm".format(MAC_IP)
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            response.read()
+        print("[Button] Reported manual button spray to Mac.")
+    except Exception as e:
+        print("[Button] Could not report manual button spray to Mac: {0}".format(e))
+
 def sync_backlog():
     import urllib.parse
 
@@ -265,6 +292,54 @@ def sync_backlog():
     finally:
         sync_lock.release()
 
+def trigger_spray(duration=None, rotation=None, roi=None, source='http'):
+    if duration is None:
+        duration = DEFAULT_SPRAY_DURATION
+    try:
+        duration = max(0.0, float(duration))
+    except Exception:
+        duration = DEFAULT_SPRAY_DURATION
+
+    if not spray_lock.acquire(False):
+        print("[Spray] Ignoring {0} trigger because a spray is already running.".format(source))
+        return False
+
+    try:
+        print("Activating solenoid on GPIO {0} for {1}s from {2}... (rotation={3}, roi={4})".format(
+            SOLENOID_PIN, duration, source, rotation, roi
+        ))
+
+        video_duration_seconds = max(1.0, duration + VIDEO_POST_ROLL_SECONDS)
+        video_duration_ms = int(video_duration_seconds * 1000)
+        video_started = threading.Event()
+        video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi, video_started))
+        video_thread.daemon = True
+        video_thread.start()
+        if not video_started.wait(5.0):
+            print("[Video] Warning: recorder did not acquire camera lock before spray.")
+        if VIDEO_START_LEAD_SECONDS > 0:
+            print("[Video] Giving camera {0:.1f}s head start before solenoid.".format(VIDEO_START_LEAD_SECONDS))
+            time.sleep(VIDEO_START_LEAD_SECONDS)
+
+        if GPIO:
+            GPIO.output(SOLENOID_PIN, GPIO.HIGH)
+            time.sleep(duration)
+            GPIO.output(SOLENOID_PIN, GPIO.LOW)
+        else:
+            time.sleep(duration)
+            print("(Simulation) Solenoid activated and deactivated.")
+        if source == 'button':
+            report_manual_spray(duration)
+        return True
+    finally:
+        spray_lock.release()
+
+def button_pressed(channel):
+    print("[Button] Manual spray button pressed on GPIO {0}.".format(channel))
+    thread = threading.Thread(target=trigger_spray, kwargs={'source': 'button'})
+    thread.daemon = True
+    thread.start()
+
 class TriggerHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         print("[Server] " + (format % args))
@@ -292,34 +367,15 @@ class TriggerHandler(BaseHTTPRequestHandler):
             if 'roi' in query:
                 roi = query['roi'][0].strip()
 
-            print("Activating solenoid on GPIO {0} for {1}s... (rotation={2}, roi={3})".format(
-                SOLENOID_PIN, duration, rotation, roi
-            ))
-
-            video_duration_seconds = max(1.0, duration + VIDEO_POST_ROLL_SECONDS)
-            video_duration_ms = int(video_duration_seconds * 1000)
-            video_started = threading.Event()
-            video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi, video_started))
-            video_thread.daemon = True
-            video_thread.start()
-            if not video_started.wait(5.0):
-                print("[Video] Warning: recorder did not acquire camera lock before spray.")
-            if VIDEO_START_LEAD_SECONDS > 0:
-                print("[Video] Giving camera {0:.1f}s head start before solenoid.".format(VIDEO_START_LEAD_SECONDS))
-                time.sleep(VIDEO_START_LEAD_SECONDS)
-
-            if GPIO:
-                GPIO.output(SOLENOID_PIN, GPIO.HIGH)
-                time.sleep(duration)
-                GPIO.output(SOLENOID_PIN, GPIO.LOW)
-            else:
-                time.sleep(duration)
-                print("(Simulation) Solenoid activated and deactivated.")
+            success = trigger_spray(duration=duration, rotation=rotation, roi=roi, source='http')
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(b'{"status":"success","message":"solenoid triggered"}')
+            if success:
+                self.wfile.write(b'{"status":"success","message":"solenoid triggered"}')
+            else:
+                self.wfile.write(b'{"status":"busy","message":"spray already running"}')
         elif parsed_path.path == '/sync':
             sync_thread = threading.Thread(target=sync_backlog)
             sync_thread.daemon = True
@@ -339,7 +395,10 @@ def run():
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(SOLENOID_PIN, GPIO.OUT)
         GPIO.output(SOLENOID_PIN, GPIO.LOW)
+        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.add_event_detect(BUTTON_PIN, GPIO.FALLING, callback=button_pressed, bouncetime=BUTTON_BOUNCE_MS)
         print("GPIO initialized successfully.")
+        print("Manual spray button listening on GPIO {0} with internal pull-up.".format(BUTTON_PIN))
 
     server_address = ('', PORT)
     httpd = HTTPServer(server_address, TriggerHandler)
