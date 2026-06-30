@@ -6441,14 +6441,20 @@ def spray_confirm():
         image_filename = None
 
     model_name = data.get('model_name') or active_model_name
+    blast_type = data.get('type') or 'auto'
+    if blast_type not in ['auto', 'manual']:
+        blast_type = 'auto'
 
     try:
-        log_blast('auto', confidence, model_name, image_filename, duration=duration)
+        log_blast(blast_type, confidence, model_name if blast_type == 'auto' else None, image_filename, duration=duration)
         last_spray_time = time.time()
-        log_message("[Spray Confirm] Pi confirmed automatic spray. confidence={0}, image={1}".format(
-            "{0:.1f}%".format(confidence * 100) if confidence is not None else "n/a",
-            image_filename or "none"
-        ))
+        if blast_type == 'manual':
+            log_message("[Spray Confirm] Pi confirmed manual spray from {0}.".format(data.get('source') or "unknown source"))
+        else:
+            log_message("[Spray Confirm] Pi confirmed automatic spray. confidence={0}, image={1}".format(
+                "{0:.1f}%".format(confidence * 100) if confidence is not None else "n/a",
+                image_filename or "none"
+            ))
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
