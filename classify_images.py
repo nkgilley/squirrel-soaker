@@ -2,7 +2,6 @@ import os
 import time
 import shutil
 import subprocess
-import mimetypes
 from flask import Flask, jsonify, request, send_from_directory, render_template_string, g
 import threading
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, select, update, delete, text
@@ -107,135 +106,6 @@ def log_message(msg):
     except Exception as e:
         print("Failed to write to classifier.log: {0}".format(e))
 
-def upload_to_catbox(filepath):
-    import urllib.request
-    import uuid
-    
-    if not filepath or not os.path.exists(filepath):
-        return None
-        
-    boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
-    filename = os.path.basename(filepath)
-    content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-    
-    try:
-        with open(filepath, 'rb') as f:
-            file_content = f.read()
-            
-        # Construct multipart form body with reqtype="fileupload" and fileToUpload
-        body = (
-            '--{0}\r\n'
-            'Content-Disposition: form-data; name="reqtype"\r\n\r\n'
-            'fileupload\r\n'
-            '--{0}\r\n'
-            'Content-Disposition: form-data; name="fileToUpload"; filename="{1}"\r\n'
-            'Content-Type: {2}\r\n\r\n'
-        ).format(boundary, filename, content_type).encode('utf-8')
-        
-        body += file_content
-        body += '\r\n--{0}--\r\n'.format(boundary).encode('utf-8')
-        
-        headers = {
-            'Content-Type': 'multipart/form-data; boundary={0}'.format(boundary),
-            'Content-Length': str(len(body))
-        }
-        
-        req = urllib.request.Request('https://catbox.moe/user/api.php', data=body, headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=20) as res:
-            url = res.read().decode('utf-8').strip()
-            log_message("[Upload] Synced file uploaded to catbox.moe: {0}".format(url))
-            return url
-    except Exception as e:
-        log_message("[Upload] Error uploading file to catbox.moe: {0}".format(e))
-        return None
-
-def upload_to_transfersh(filepath):
-    import urllib.request
-    
-    if not filepath or not os.path.exists(filepath):
-        return None
-        
-    filename = os.path.basename(filepath)
-    try:
-        with open(filepath, 'rb') as f:
-            file_content = f.read()
-            
-        req = urllib.request.Request(
-            'https://transfer.sh/{0}'.format(filename), 
-            data=file_content, 
-            method='PUT'
-        )
-        with urllib.request.urlopen(req, timeout=20) as res:
-            url = res.read().decode('utf-8').strip()
-            log_message("[Upload] Synced file uploaded to transfer.sh: {0}".format(url))
-            return url
-    except Exception as e:
-        log_message("[Upload] Error uploading file to transfer.sh: {0}".format(e))
-        return None
-
-def upload_to_0x0(filepath):
-    import urllib.request
-    import uuid
-    
-    if not filepath or not os.path.exists(filepath):
-        return None
-        
-    boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
-    filename = os.path.basename(filepath)
-    content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-    
-    try:
-        with open(filepath, 'rb') as f:
-            file_content = f.read()
-            
-        # Construct multipart form body
-        body = (
-            '--{0}\r\n'
-            'Content-Disposition: form-data; name="file"; filename="{1}"\r\n'
-            'Content-Type: {2}\r\n\r\n'
-        ).format(boundary, filename, content_type).encode('utf-8')
-        
-        body += file_content
-        body += '\r\n--{0}--\r\n'.format(boundary).encode('utf-8')
-        
-        headers = {
-            'Content-Type': 'multipart/form-data; boundary={0}'.format(boundary),
-            'Content-Length': str(len(body))
-        }
-        
-        req = urllib.request.Request('https://0x0.st', data=body, headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=20) as res:
-            url = res.read().decode('utf-8').strip()
-            log_message("[Upload] Synced file uploaded to 0x0.st: {0}".format(url))
-            return url
-    except Exception as e:
-        log_message("[Upload] Error uploading file to 0x0.st: {0}".format(e))
-        return None
-
-def upload_file_to_public_host(filepath):
-    log_message("[Upload] Starting public upload for {0}...".format(os.path.basename(filepath)))
-    
-    # 1. Try Catbox
-    url = upload_to_catbox(filepath)
-    if url:
-        return url
-        
-    # 2. Try Transfer.sh
-    url = upload_to_transfersh(filepath)
-    if url:
-        return url
-        
-    # 3. Try 0x0.st (fallback)
-    url = upload_to_0x0(filepath)
-    if url:
-        return url
-        
-    log_message("[Upload] All upload providers failed.")
-    return None
-
-def upload_video_to_public_host(filepath):
-    return upload_file_to_public_host(filepath)
-
 def resolve_image_path(filename):
     if not filename:
         return None
@@ -252,9 +122,6 @@ def build_image_url(filename, base_url):
     image_path = resolve_image_path(filename)
     if not image_path:
         return None, None
-    public_url = upload_file_to_public_host(image_path)
-    if public_url:
-        return public_url, image_path
     return "{0}/image/{1}".format(base_url, filename), image_path
 
 # --- ML Model Configuration ---
