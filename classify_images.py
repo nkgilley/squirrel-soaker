@@ -475,7 +475,7 @@ default_settings = {
     'motion_threshold': 6.0,
     'motion_force_interval': 30,
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
-    'camera_rotation': 0,
+    'camera_rotation': 180,
     'camera_roi': '0.05,0.15,0.3,0.3',
     'video_roi': '0.0,0.0,0.6,0.6',
     'confidence_threshold': 0.70,
