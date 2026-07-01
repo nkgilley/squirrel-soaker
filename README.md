@@ -174,9 +174,10 @@ Useful signs in the capture log:
 
 Manual hardware spray button:
 
-- Default button pin is GPIO 27, using the Pi's internal pull-up resistor.
-- Wire one side of a normally open momentary button to GPIO 27 and the other side to a Pi ground pin.
-- Pressing the button triggers the same local spray/video path as the web UI. Set `BUTTON_PIN=<BCM pin>` in `squirrel-trigger.service` if you need a different pin.
+- Default button pin is BCM GPIO 27, which is physical header pin 13, using the Pi's internal pull-up resistor.
+- Wire one side of a normally open momentary button to physical pin 13 / BCM GPIO 27 and the other side to a Pi ground pin.
+- Pressing the button should pull GPIO 27 from high to low and triggers the same local spray/video path as the web UI.
+- Set `BUTTON_PIN=<BCM pin>` in `squirrel-trigger.service` if you need a different pin. Set `BUTTON_ACTIVE_LOW=false` for active-high button modules.
 
 ---
 
