@@ -22,7 +22,9 @@ except ImportError:
 PORT = 8080
 SOLENOID_PIN = 17
 BUTTON_PIN = int(os.environ.get('BUTTON_PIN', '27'))
-BUTTON_BOUNCE_MS = 750
+BUTTON_ACTIVE_LOW = os.environ.get('BUTTON_ACTIVE_LOW', 'true').lower() not in ('0', 'false', 'no', 'off')
+BUTTON_BOUNCE_SECONDS = 0.75
+BUTTON_POLL_SECONDS = 0.05
 DEFAULT_SPRAY_DURATION = 3.0
 MAC_IP = '192.168.86.137'
 CAPTURES_DIR = os.path.expanduser('~/squirrel_soaker/captures')
@@ -180,7 +182,8 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
         url = "http://{0}:5001/api/upload_video?filename={1}".format(MAC_IP, encoded)
         try:
             post_file(url, filepath, 'video/h264', timeout=30)
-            os.remove(filepath)
+            if os.path.exists(filepath):
+                os.remove(filepath)
             print("[Video] Uploaded {0} from RAM and removed local copy.".format(filename))
         except Exception as e:
             ensure_dir(CAPTURES_DIR)
@@ -334,11 +337,35 @@ def trigger_spray(duration=None, rotation=None, roi=None, source='http'):
     finally:
         spray_lock.release()
 
-def button_pressed(channel):
-    print("[Button] Manual spray button pressed on GPIO {0}.".format(channel))
+def button_pressed():
+    print("[Button] Manual spray button pressed on GPIO {0}.".format(BUTTON_PIN))
     thread = threading.Thread(target=trigger_spray, kwargs={'source': 'button'})
     thread.daemon = True
     thread.start()
+
+def button_monitor():
+    if not GPIO:
+        return
+
+    active_value = GPIO.LOW if BUTTON_ACTIVE_LOW else GPIO.HIGH
+    last_pressed = (GPIO.input(BUTTON_PIN) == active_value)
+    last_triggered = 0.0
+
+    if last_pressed:
+        print("[Button] GPIO {0} is already active at startup; waiting for release before triggering.".format(BUTTON_PIN))
+
+    while True:
+        try:
+            pressed = (GPIO.input(BUTTON_PIN) == active_value)
+            now = time.time()
+            if pressed and not last_pressed and now - last_triggered >= BUTTON_BOUNCE_SECONDS:
+                last_triggered = now
+                button_pressed()
+            last_pressed = pressed
+            time.sleep(BUTTON_POLL_SECONDS)
+        except Exception as e:
+            print("[Button] Error reading GPIO {0}: {1}".format(BUTTON_PIN, e))
+            time.sleep(1.0)
 
 class TriggerHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -395,10 +422,16 @@ def run():
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(SOLENOID_PIN, GPIO.OUT)
         GPIO.output(SOLENOID_PIN, GPIO.LOW)
-        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.add_event_detect(BUTTON_PIN, GPIO.FALLING, callback=button_pressed, bouncetime=BUTTON_BOUNCE_MS)
+        pull_mode = GPIO.PUD_UP if BUTTON_ACTIVE_LOW else GPIO.PUD_DOWN
+        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=pull_mode)
+        monitor_thread = threading.Thread(target=button_monitor)
+        monitor_thread.daemon = True
+        monitor_thread.start()
         print("GPIO initialized successfully.")
-        print("Manual spray button listening on GPIO {0} with internal pull-up.".format(BUTTON_PIN))
+        print("Manual spray button listening on GPIO {0} with internal {1}.".format(
+            BUTTON_PIN,
+            "pull-up" if BUTTON_ACTIVE_LOW else "pull-down"
+        ))
 
     server_address = ('', PORT)
     httpd = HTTPServer(server_address, TriggerHandler)
