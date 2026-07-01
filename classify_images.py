@@ -664,25 +664,17 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
     
     title = "🐿️ Squirrel Blasted! 💦"
     base_url = get_local_base_url()
-    image_url, image_path = build_image_url(image_filename, base_url)
+    _image_url, image_path = build_image_url(image_filename, base_url)
 
     if blast_type == 'auto':
         msg = "Automatic repeller triggered a water spray! (Model confidence: {0:.1f}%)".format(confidence * 100 if confidence else 0)
     else:
         msg = "Manual spray triggered from the web interface."
 
-    if image_url:
-        msg += "\n\nTrigger image: {0}".format(image_url)
-        
-    # Construct video URL for Join Push (Try public hosts first, fallback to local IP)
-    video_url = None
+    if image_filename:
+        msg += "\n\nTrigger image is available in the app."
     if video_path and video_filename:
-        video_url = upload_video_to_public_host(video_path)
-        if not video_url:
-            video_url = "{0}/video/{1}".format(base_url, video_filename)
-        
-        # Append the public/local video URL directly to the notification message body for visibility
-        msg += "\n\nWatch video: {0}".format(video_url)
+        msg += "\n\nSpray video is available in the app."
         
     log_message(msg)
     
@@ -699,11 +691,6 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
                     'text': msg,
                     'deviceId': 'group.all'
                 }
-                if video_url:
-                    params['url'] = video_url
-                    params['file'] = video_url
-                elif image_url:
-                    params['url'] = image_url
                 url = "https://joinjoaomgcd.appspot.com/_ah/api/messaging/v1/sendPush?" + urllib.parse.urlencode(params)
                 req = urllib.request.Request(url, method='GET')
                 with urllib.request.urlopen(req, timeout=5) as response:
