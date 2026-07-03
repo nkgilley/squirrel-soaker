@@ -13,6 +13,7 @@ services:
     environment:
       - TZ=America/New_York
       - PUBLIC_BASE_URL=http://192.168.86.137
+      - SNAPSHOT_URL=http://wyze-bridge:5000/snapshot/v3.jpg
     restart: unless-stopped
 
   wyze-bridge:

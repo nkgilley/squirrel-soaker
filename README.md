@@ -2,12 +2,13 @@
 
 The **Squirrel Soaker 9001** is an automated, AI-powered garden protection system that detects squirrels at a birdfeeder and gently repels them with a short blast from a water solenoid valve.
 
-The system is split across two machines:
+The current `main` branch uses a Wyze/IP-camera snapshot feed for images:
 
-1. **Raspberry Pi 3/4** with a camera module. It captures still images, reports Pi health, triggers the solenoid locally, and records spray videos.
-2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It receives images over HTTP, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
+1. **Wyze Cam v3 through docker-wyze-bridge**. The bridge exposes a local JPEG snapshot at `http://localhost:5050/snapshot/v3.jpg` on the Mac host, and at `http://wyze-bridge:5000/snapshot/v3.jpg` from inside Docker.
+2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It pulls snapshots on the analysis interval, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
+3. **Raspberry Pi / future ESP32 solenoid controller** for water control. The legacy Pi camera/capture implementation is preserved on the `pi-camera-legacy` branch.
 
-The current capture path uses HTTP still-image uploads. RTSP streaming was removed because the still capture path gives better image quality for classification.
+The current capture path uses HTTP JPEG snapshots because still frames are cleaner for classification than RTSP video frames.
 
 ---
 
@@ -16,47 +17,35 @@ The current capture path uses HTTP still-image uploads. RTSP streaming was remov
 ```mermaid
 sequenceDiagram
     autonumber
-    loop Daylight hours, configurable cadence
-        Raspberry Pi->>Raspberry Pi: Capture JPEG bytes in memory with rpicam-still
-        Raspberry Pi->>Raspberry Pi: Optional motion prefilter
-        alt Motion skipped
-            Raspberry Pi->>Mac/Docker Server: POST /api/pi_status
-        else Analyze frame
-            Raspberry Pi->>Mac/Docker Server: POST JPEG bytes to /api/predict
-            Mac/Docker Server->>Mac/Docker Server: Normalize frame, update live snapshot, run PyTorch inference
-            opt Save interval elapsed
-                Mac/Docker Server->>Mac/Docker Server: Save review image on server storage
-            end
-            Mac/Docker Server-->>Raspberry Pi: Return prediction and metrics
-            alt Squirrel detected above threshold
-                Raspberry Pi->>Raspberry Pi: Trigger GPIO 17 solenoid
-                Raspberry Pi->>Raspberry Pi: Record spray video to RAM
-                Raspberry Pi->>Mac/Docker Server: Upload video to /api/upload_video
-            end
-            Raspberry Pi->>Mac/Docker Server: POST /api/pi_status
+    loop Configurable analysis interval
+        Mac/Docker Server->>Wyze Bridge: GET /snapshot/v3.jpg
+        Wyze Bridge-->>Mac/Docker Server: JPEG snapshot
+        Mac/Docker Server->>Mac/Docker Server: Normalize frame, update live snapshot, run PyTorch inference
+        opt Save interval elapsed
+            Mac/Docker Server->>Mac/Docker Server: Save review image on server storage
+        end
+        alt Repeated squirrel detections pass spray gate
+            Mac/Docker Server->>Solenoid Controller: Trigger spray command
         end
     end
 ```
 
-Normal operation keeps Pi media in memory:
+Normal camera operation keeps media on the Mac/server:
 
-- Still images are captured through `rpicam-still --output -` on current Raspberry Pi OS, with fallback support for legacy `raspistill`, and posted directly to the Mac.
-- Unsaved analysis frames are dropped after inference.
+- Still images are fetched from the configured snapshot URL.
+- Unsaved analysis frames are kept in memory only and dropped after inference.
 - Review frames are saved on the Mac, not the Pi.
-- Pi SD-card writes are used only as a backlog fallback when the Mac cannot accept a saved review frame.
-- Spray videos record to `/dev/shm/squirrel_soaker` first and move to the Pi SD backlog only if upload fails.
-- The Pi backlog is capped at 24 hours, 300 files, or 250 MB, and the oldest files are pruned first.
 - Spray/detection history is stored as durable blast events; videos are media attachments, so deleting video files does not remove false-positive or accuracy history.
 
 ---
 
 ## Hardware Requirements
 
-1. Raspberry Pi 3 or 4 running Raspberry Pi OS.
-2. Raspberry Pi Camera Module configured with the legacy camera stack.
+1. Wyze Cam v3 or another IP camera with a local JPEG snapshot URL.
+2. Docker Desktop on the Mac/server, running `squirrel-soaker` and `wyze-bridge`.
 3. 12V normally closed solenoid valve.
-4. Relay module or transistor circuit so Pi GPIO 17 can control the 12V solenoid.
-5. Momentary push button wired between Pi GPIO 27 and ground for manual sprays.
+4. Relay/transistor controller for the 12V solenoid. The previous Pi GPIO controller still works from the `pi-camera-legacy` branch; an ESP32 controller is a good future replacement.
+5. Momentary push button wired to the controller for manual sprays.
 6. 12V DC power supply for the solenoid valve.
 7. Tubing and nozzle mounted near the birdfeeder.
 
@@ -68,7 +57,7 @@ The server runs `classify_images.py`, a Flask app that provides:
 
 - `/api/predict` for image inference.
 - `/api/pi_status` and `/api/health/history` for system telemetry.
-- `/api/settings` for dynamic Pi camera and automation settings.
+- `/api/settings` for camera source, snapshot URL, cadence, quality, and automation settings.
 - `/api/upload_video` for spray event videos.
 - A web UI for live monitoring, image review, video review, training, settings, and calibration.
 
@@ -106,15 +95,19 @@ docker compose up -d --build
 The included `docker-compose.yml` maps:
 
 - `5001:5001` for the web app.
+- `5050:5000`, `8554:8554`, and `8888:8888` for docker-wyze-bridge.
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for persistent model weights.
+- `SNAPSHOT_URL=http://wyze-bridge:5000/snapshot/v3.jpg` so the app can fetch Wyze snapshots from inside Docker.
 - `PUBLIC_BASE_URL=http://192.168.86.137` so notification links use the LAN address instead of Docker's internal bridge IP.
+
+The Wyze bridge token cache is stored in the Docker volume `squirrel-soaker-codex_wyze-bridge-tokens`.
 
 ---
 
-## Raspberry Pi Setup
+## Legacy Raspberry Pi Setup
 
-The repo includes Pi-side scripts and services:
+The old Pi camera/capture path is preserved on the `pi-camera-legacy` branch. The repo still includes Pi-side scripts and services:
 
 - `capture.py`: still capture, motion prefilter, inference upload, Pi status reporting.
 - `trigger_server.py`: local solenoid HTTP endpoint, spray video recording, backlog sync.
@@ -183,23 +176,25 @@ Manual hardware spray button:
 
 ## Settings
 
-Most runtime behavior is managed from the web UI Settings view and synced to the Pi dynamically through `/api/settings`.
+Most runtime behavior is managed from the web UI Settings view.
 
 Important settings:
 
-- **Analysis Interval**: how often the Pi captures and analyzes a frame. Current default is 5 seconds.
+- **Camera Source**: `snapshot` for Wyze/IP-camera snapshots, `pi` for legacy Pi uploads, or `rtsp` for the old RTSP reader.
+- **Snapshot URL**: default Docker URL is `http://wyze-bridge:5000/snapshot/v3.jpg`.
+- **Analysis Interval**: how often the app fetches and analyzes a frame. Current default is 5 seconds.
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
 - **Daylight Schedule**: nighttime capture pause can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable.
 - **Analysis Size and JPEG Quality**: smaller/faster transient frames.
 - **Review JPEG Quality**: higher quality frames saved for classification.
-- **Camera ROI**: still-image crop used by the Pi camera command.
-- **Video ROI**: crop used for spray event videos.
-- **Camera Rotation**: Pi camera rotation.
+- **Camera ROI**: legacy Pi still-image crop.
+- **Video ROI**: legacy Pi/video crop used for spray event videos.
+- **Camera Rotation**: legacy Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
-Camera calibration lives in the Settings view. The green calibration box maps to the full camera frame and should represent the actual still-photo ROI used by the Pi.
+Camera calibration lives in the Settings view. For snapshot cameras, the latest captured output is the important preview; the ROI map is mainly for the legacy Pi crop path.
 
 ---
 
@@ -247,11 +242,10 @@ Dashboard health graph:
 ## Operations Notes
 
 - The Pi is intentionally RAM-first to reduce SD-card wear.
-- `~/squirrel_soaker/captures` on the Pi is a backlog directory, not the normal storage location.
+- `~/squirrel_soaker/captures` on the Pi is a legacy backlog directory, not the normal storage location.
 - Server-side persistent data lives under `data/`.
-- Live snapshots update from the latest analyzed HTTP still frame.
-- If the live view slows down, check the health graph first. Capture time is usually stable; spikes generally come from upload or server-side prediction handling.
-- If the Pi cannot reach the Mac, saved review frames and spray videos may accumulate in the Pi backlog and are retried through `/sync`; backlog pruning keeps this from filling the SD card.
+- Live snapshots update from the latest analyzed Wyze/IP-camera snapshot frame.
+- If the live view slows down, check the health graph first. Snapshot fetch time and model time are the main signals.
 
 ---
 

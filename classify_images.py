@@ -309,6 +309,7 @@ load_env_file()
 PI_IP = os.environ.get('PI_IP', '192.168.86.136')
 PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'http://192.168.86.137')
 DEFAULT_STREAM_URL = os.environ.get('STREAM_URL', 'http://{0}:8554/stream.mjpg'.format(PI_IP))
+DEFAULT_SNAPSHOT_URL = os.environ.get('SNAPSHOT_URL', 'http://localhost:5050/snapshot/v3.jpg')
 
 RAW_DIR = os.path.join(BASE_DIR, 'data', 'raw')
 DATASET_DIR = os.path.join(BASE_DIR, 'data', 'dataset')
@@ -364,6 +365,8 @@ default_settings = {
     'retention_days_trash': 1,
     'retention_days_videos': 14,
     'active_model': 'yolov8n-oiv7.pt',
+    'camera_source': 'snapshot',
+    'snapshot_url': DEFAULT_SNAPSHOT_URL,
     'enable_rtsp': False,
     'rtsp_stream_url': DEFAULT_STREAM_URL,
     'rtsp_motion_interval_minutes': 5
@@ -1249,7 +1252,8 @@ def get_stats():
     current_hour = datetime.datetime.now().hour
 
     settings = load_settings()
-    enable_rtsp = settings.get('enable_rtsp', True)
+    camera_source = settings.get('camera_source', 'snapshot')
+    enable_rtsp = camera_source == 'rtsp' and settings.get('enable_rtsp', True)
 
     return {
         'raw_count': raw_count,
@@ -1258,6 +1262,7 @@ def get_stats():
         'total_dataset_count': squirrel_count + not_squirrel_count,
         'latest_image_mtime': latest_mtime,
         'current_hour': current_hour,
+        'camera_source': camera_source,
         'enable_rtsp': enable_rtsp
     }
 
@@ -3093,18 +3098,19 @@ HTML_TEMPLATE = """
                     if (qSub) qSub.innerText = `${statsData.stats.raw_count} raw images remaining`;
 
                     const hour = statsData.stats.current_hour;
+                    const cameraSource = statsData.stats.camera_source || 'snapshot';
                     const mtime = updateLiveSnapshotTimestamp(statsData.stats);
                     const now = Date.now();
                     const ageSeconds = (now - mtime) / 1000;
                     
                     const overlay = document.getElementById('dash-feed-overlay');
                     if (overlay) {
-                        if (hour < 6 || hour >= 20) {
+                        if (cameraSource === 'pi' && (hour < 6 || hour >= 20)) {
                             overlay.innerHTML = `<span class="dot" style="background-color: var(--color-delete); box-shadow: 0 0 8px var(--color-delete); animation: none;"></span><span>SLEEPING (Night)</span>`;
-                            overlay.title = "Camera is currently sleeping (6:00 AM - 8:00 PM Eastern active hours).";
+                            overlay.title = "Pi camera capture is currently sleeping overnight.";
                         } else if (mtime > 0 && ageSeconds > 300) {
                             overlay.innerHTML = `<span class="dot" style="background-color: var(--color-not-squirrel); box-shadow: 0 0 8px var(--color-not-squirrel); animation: none;"></span><span>IDLE / OFFLINE</span>`;
-                            overlay.title = "No capture received in the last 5 minutes. Pi may be offline or camera is idle.";
+                            overlay.title = "No capture received in the last 5 minutes. Camera may be offline or idle.";
                         } else {
                             overlay.innerHTML = `<span class="dot" style="background-color: var(--color-squirrel); box-shadow: 0 0 8px var(--color-squirrel);"></span><span>LIVE</span>`;
                             overlay.title = "Camera is active and sending images.";
@@ -3494,7 +3500,22 @@ HTML_TEMPLATE = """
                     </div>
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">RTSP Stream Settings 🎥</h3>
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Source</h3>
+
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Frame Source</label>
+                            <select id="settings-camera-source" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
+                                <option value="snapshot">Wyze/IP Snapshot URL</option>
+                                <option value="pi">Raspberry Pi Uploads</option>
+                                <option value="rtsp">RTSP Stream</option>
+                            </select>
+                        </div>
+
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Snapshot URL</label>
+                            <input type="text" id="settings-snapshot-url" placeholder="http://wyze-bridge:5000/snapshot/v3.jpg" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Inside Docker, the Wyze bridge is reachable at http://wyze-bridge:5000/snapshot/v3.jpg.</span>
+                        </div>
 
                         <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem;">
                             <input type="checkbox" id="settings-enable-rtsp" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
@@ -3759,6 +3780,8 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-smtp-server').value = data.settings.email_smtp_server || '';
                     document.getElementById('settings-email-to').value = data.settings.email_to || '';
                     
+                    document.getElementById('settings-camera-source').value = data.settings.camera_source || 'snapshot';
+                    document.getElementById('settings-snapshot-url').value = data.settings.snapshot_url || 'http://wyze-bridge:5000/snapshot/v3.jpg';
                     document.getElementById('settings-enable-rtsp').checked = data.settings.enable_rtsp !== false;
                     document.getElementById('settings-rtsp-url').value = data.settings.rtsp_stream_url || 'rtsp://pi3:8554/live';
                     document.getElementById('settings-rtsp-motion-interval').value = data.settings.rtsp_motion_interval_minutes || 5;
@@ -3847,6 +3870,8 @@ HTML_TEMPLATE = """
             const email_to = document.getElementById('settings-email-to').value;
             const active_model = document.getElementById('settings-active-model') ? document.getElementById('settings-active-model').value : '';
             
+            const camera_source = document.getElementById('settings-camera-source').value;
+            const snapshot_url = document.getElementById('settings-snapshot-url').value;
             const enable_rtsp = document.getElementById('settings-enable-rtsp').checked;
             const rtsp_stream_url = document.getElementById('settings-rtsp-url').value;
             const rtsp_motion_interval_minutes = parseInt(document.getElementById('settings-rtsp-motion-interval').value);
@@ -3895,6 +3920,8 @@ HTML_TEMPLATE = """
                         email_smtp_server,
                         email_to,
                         active_model,
+                        camera_source,
+                        snapshot_url,
                         enable_rtsp,
                         rtsp_stream_url,
                         rtsp_motion_interval_minutes
@@ -6375,6 +6402,8 @@ def api_health():
             'camera_roi': settings.get('camera_roi'),
             'video_roi': settings.get('video_roi'),
             'camera_rotation': settings.get('camera_rotation'),
+            'camera_source': settings.get('camera_source'),
+            'snapshot_url': settings.get('snapshot_url'),
             'confidence_threshold': settings.get('confidence_threshold'),
             'spray_decision_required_hits': settings.get('spray_decision_required_hits'),
             'spray_decision_window_seconds': settings.get('spray_decision_window_seconds'),
@@ -6543,17 +6572,13 @@ def upload_video():
         log_message("Error receiving video {0}: {1}".format(filename, str(e)))
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/api/predict', methods=['POST'])
-def predict():
+def process_camera_frame(img_data, save_requested=True, is_test=False, source='upload'):
     global automation_enabled, last_spray_time
     global latest_frame_jpeg, latest_frame_time, latest_predict_metrics
     request_started_at = time.time()
-    img_data = request.data
     if not img_data:
-        return jsonify({'status': 'error', 'message': 'No image data received'}), 400
-        
-    is_test = request.args.get('test') == 'true'
-    save_requested = setting_enabled(request.args.get('save', 'true'))
+        return {'status': 'error', 'message': 'No image data received'}, 400
+
     settings = load_settings()
     
     import datetime
@@ -6663,12 +6688,28 @@ def predict():
     
     if should_spray:
         if not is_test:
-            log_message("[Spray Decision] Spray requested after {0}/{1} detections in {2:.0f}s, avg confidence {3:.1f}%. Waiting for Pi trigger confirmation.".format(
-                decision['hits'],
-                decision['required_hits'],
-                decision['window_seconds'],
-                decision['average_confidence'] * 100
-            ))
+            if source == 'pi_upload':
+                log_message("[Spray Decision] Spray requested after {0}/{1} detections in {2:.0f}s, avg confidence {3:.1f}%. Waiting for Pi trigger confirmation.".format(
+                    decision['hits'],
+                    decision['required_hits'],
+                    decision['window_seconds'],
+                    decision['average_confidence'] * 100
+                ))
+            else:
+                log_message("[Spray Decision] Spray requested from {0} after {1}/{2} detections in {3:.0f}s, avg confidence {4:.1f}%.".format(
+                    source,
+                    decision['hits'],
+                    decision['required_hits'],
+                    decision['window_seconds'],
+                    decision['average_confidence'] * 100
+                ))
+                last_spray_time = current_time
+                log_blast('auto', confidence, active_model_name, filename if should_save_image else None, duration=duration)
+                trigger_thread = threading.Thread(target=trigger_solenoid_on_pi, args=(duration,))
+                trigger_thread.daemon = True
+                trigger_thread.start()
+                if should_save_image:
+                    start_local_video_recording(duration, filename)
     elif is_squirrel and automation_enabled:
         if not meets_threshold:
             log_message("[Prediction] Squirrel detected, but skipping spray because confidence ({0:.1f}%) is below threshold ({1:.1f}%).".format(
@@ -6688,6 +6729,7 @@ def predict():
         
     total_ms = (time.time() - request_started_at) * 1000
     metrics = {
+        'source': source,
         'received_at': time.time(),
         'filename': filename if should_save_image else None,
         'input_bytes': len(img_data),
@@ -6707,8 +6749,27 @@ def predict():
     }
     with telemetry_lock:
         latest_predict_metrics = metrics
+        if source == 'snapshot':
+            latest_pi_status.update({
+                'status': 'analyzed',
+                'source': 'snapshot',
+                'received_at': metrics['received_at'],
+                'captured_at': now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                'filename': filename,
+                'file_bytes': len(img_data),
+                'width': settings.get('analysis_width'),
+                'height': settings.get('analysis_height'),
+                'confidence': confidence,
+                'is_squirrel': is_squirrel,
+                'should_save': should_save_image,
+                'saved_for_review': should_save_image,
+                'sd_write': False,
+                'total_ms': round(total_ms, 1),
+                'server_metrics': metrics
+            })
+            add_health_sample('snapshot', pi=latest_pi_status, predict=metrics)
 
-    return jsonify({
+    return {
         'is_squirrel': should_spray,
         'detected_squirrel': is_squirrel,
         'should_spray': should_spray,
@@ -6720,7 +6781,20 @@ def predict():
         'automation_enabled': automation_enabled,
         'active_model': active_model_name,
         'spray_duration': duration
-    })
+    }, 200
+
+@app.route('/api/predict', methods=['POST'])
+def predict():
+    img_data = request.data
+    is_test = request.args.get('test') == 'true'
+    save_requested = setting_enabled(request.args.get('save', 'true'))
+    result, status_code = process_camera_frame(
+        img_data,
+        save_requested=save_requested,
+        is_test=is_test,
+        source='pi_upload'
+    )
+    return jsonify(result), status_code
 load_active_model()
 
 # --- RTSP Continuous Streaming & Real-Time Inference ---
@@ -6837,6 +6911,83 @@ def start_local_video_recording(duration, still_filename):
         record_frames_written = 0
         
     print("[RTSP-Record] Started local recording to {} for {}s".format(filepath, duration + 2.0))
+
+def write_recording_frame_from_jpeg(img_data):
+    global latest_frame_raw
+    global record_file_path, record_video_writer, record_frames_written
+    try:
+        import cv2
+        import numpy as np
+        arr = np.frombuffer(img_data, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+        with frame_lock:
+            latest_frame_raw = frame.copy()
+        with record_lock:
+            if record_video_writer is not None:
+                record_video_writer.write(frame)
+                record_frames_written += 1
+                if time.time() >= record_until_time:
+                    print("[Snapshot-Record] Recording finished. Total frames written: {}".format(record_frames_written))
+                    record_video_writer.release()
+                    final_path = record_file_path
+                    threading.Thread(target=finalize_video_recording, args=(final_path,)).start()
+                    record_video_writer = None
+                    record_file_path = None
+                    record_frames_written = 0
+    except Exception as e:
+        print("[Snapshot-Record] Error writing frame:", e)
+
+def snapshot_thread_loop():
+    import urllib.request
+
+    last_save_time = 0.0
+    last_error_log = 0.0
+    log_message("[Snapshot] Background snapshot camera thread started.")
+
+    while True:
+        settings = load_settings()
+        if settings.get('camera_source', 'snapshot') != 'snapshot':
+            time.sleep(2.0)
+            continue
+
+        snapshot_url = str(settings.get('snapshot_url') or DEFAULT_SNAPSHOT_URL).strip()
+        interval = max(1.0, float(settings.get('analysis_interval', 5)))
+        save_interval = max(interval, float(settings.get('save_interval', 30)))
+        now = time.time()
+        should_save = last_save_time <= 0.0 or now - last_save_time >= save_interval
+
+        try:
+            request_started_at = time.time()
+            req = urllib.request.Request(snapshot_url, headers={'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                img_data = response.read()
+            fetch_ms = (time.time() - request_started_at) * 1000
+
+            result, status_code = process_camera_frame(
+                img_data,
+                save_requested=should_save,
+                is_test=False,
+                source='snapshot'
+            )
+            if status_code == 200 and should_save:
+                last_save_time = now
+
+            with telemetry_lock:
+                latest_pi_status['capture_ms'] = round(fetch_ms, 1)
+                latest_pi_status['upload_ms'] = 0.0
+                latest_pi_status['analysis_interval'] = interval
+                latest_pi_status['save_interval'] = save_interval
+
+            write_recording_frame_from_jpeg(img_data)
+        except Exception as e:
+            now = time.time()
+            if now - last_error_log > 30.0:
+                log_message("[Snapshot] Error fetching {0}: {1}".format(snapshot_url, e))
+                last_error_log = now
+
+        time.sleep(interval)
 
 def rtsp_thread_loop():
     global latest_frame_jpeg, latest_frame_time, latest_frame_raw, last_spray_time
@@ -7051,12 +7202,18 @@ def start_background_services():
     cleanup_thread.daemon = True
     cleanup_thread.start()
 
-    if load_settings().get('enable_rtsp', False):
+    settings = load_settings()
+    snapshot_thread = threading.Thread(target=snapshot_thread_loop)
+    snapshot_thread.daemon = True
+    snapshot_thread.start()
+
+    camera_source = settings.get('camera_source', 'snapshot')
+    if camera_source == 'rtsp' and settings.get('enable_rtsp', False):
         rtsp_thread = threading.Thread(target=rtsp_thread_loop)
         rtsp_thread.daemon = True
         rtsp_thread.start()
-    else:
-        log_message("Streaming backend disabled; RTSP/MJPEG reader thread not started.")
+    elif camera_source not in ('snapshot', 'pi'):
+        log_message("Streaming backend disabled; no camera reader thread started.")
 
 
 start_background_services()
