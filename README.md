@@ -6,7 +6,7 @@ The current `main` branch uses a Wyze/IP-camera snapshot feed for images:
 
 1. **Wyze Cam v3 through docker-wyze-bridge**. The bridge exposes a local JPEG snapshot at `http://localhost:5050/snapshot/v3.jpg` on the Mac host, and at `http://wyze-bridge:5000/snapshot/v3.jpg` from inside Docker.
 2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It pulls snapshots on the analysis interval, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
-3. **Raspberry Pi / future ESP32 solenoid controller** for water control. The legacy Pi camera/capture implementation is preserved on the `pi-camera-legacy` branch.
+3. **ESP32 ESPHome solenoid controller** for water control. The legacy Pi camera/capture implementation is preserved on the `pi-camera-legacy` branch.
 
 The current capture path uses HTTP JPEG snapshots because still frames are cleaner for classification than RTSP video frames.
 
@@ -44,7 +44,7 @@ Normal camera operation keeps media on the Mac/server:
 1. Wyze Cam v3 or another IP camera with a local JPEG snapshot URL.
 2. Docker Desktop on the Mac/server, running `squirrel-soaker` and `wyze-bridge`.
 3. 12V normally closed solenoid valve.
-4. Relay/transistor controller for the 12V solenoid. The previous Pi GPIO controller still works from the `pi-camera-legacy` branch; an ESP32 controller is a good future replacement.
+4. Relay/transistor controller for the 12V solenoid. The previous Pi GPIO controller still works from the `pi-camera-legacy` branch.
 5. Momentary push button wired to the controller for manual sprays.
 6. 12V DC power supply for the solenoid valve.
 7. Tubing and nozzle mounted near the birdfeeder.
@@ -99,9 +99,45 @@ The included `docker-compose.yml` maps:
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for persistent model weights.
 - `SNAPSHOT_URL=http://wyze-bridge:5000/snapshot/v3.jpg` so the app can fetch Wyze snapshots from inside Docker.
+- `SPRAY_CONTROLLER_URL=http://192.168.86.136` so the app can trigger the ESPHome controller. The controller also advertises as `squirrel-soaker-controller.local`, but the numeric LAN IP is more reliable from inside Docker on macOS.
 - `PUBLIC_BASE_URL=http://192.168.86.137` so notification links use the LAN address instead of Docker's internal bridge IP.
 
 The Wyze bridge token cache is stored in the Docker volume `squirrel-soaker-codex_wyze-bridge-tokens`.
+
+---
+
+## ESP32 Solenoid Controller
+
+The current solenoid path uses an ESP-WROOM-32 board running ESPHome. The firmware config is in `esphome/squirrel-soaker-controller.yaml`.
+
+Default wiring:
+
+- Relay control: GPIO26.
+- Manual spray button: GPIO27, normally open to ground, using the ESP32 internal pull-up.
+- The ESP32 GPIO should drive a relay module or transistor/MOSFET driver, not the solenoid directly. A bare coil needs proper flyback protection.
+
+Create the private ESPHome secrets file before flashing:
+
+```bash
+cp esphome/secrets.example.yaml esphome/secrets.yaml
+```
+
+Then edit `esphome/secrets.yaml` with the Wi-Fi network name, Wi-Fi password, and fallback setup AP password. This file is ignored by git.
+
+Flash over USB:
+
+```bash
+esphome run esphome/squirrel-soaker-controller.yaml --device /dev/cu.usbserial-0001
+```
+
+Once online, the app triggers sprays through the ESPHome local web API. The first flashed controller came up at `192.168.86.136`:
+
+```text
+POST http://192.168.86.136/number/spray_duration/set?value=3.0
+POST http://192.168.86.136/button/spray/press
+```
+
+The same controller can also be managed from the ESPHome native API if you later add Home Assistant or another ESPHome client.
 
 ---
 
@@ -192,6 +228,7 @@ Important settings:
 - **Camera Rotation**: legacy Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
+- **Spray Controller**: choose ESPHome or the legacy Raspberry Pi controller and set the ESPHome controller URL.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
 Camera calibration lives in the Settings view. For snapshot cameras, the latest captured output is the important preview; the ROI map is mainly for the legacy Pi crop path.

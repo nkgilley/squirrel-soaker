@@ -359,6 +359,8 @@ default_settings = {
     'spray_duration': 3.0,
     'long_spray_duration': 5.0,
     'long_spray_threshold_hours': 2.0,
+    'spray_controller_type': 'esphome',
+    'spray_controller_url': os.environ.get('SPRAY_CONTROLLER_URL', 'http://squirrel-soaker-controller.local'),
     'retention_days_raw': 3,
     'retention_days_not_squirrel': 7,
     'retention_min_not_squirrel': 1000,
@@ -3487,6 +3489,21 @@ HTML_TEMPLATE = """
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">The standard duration the solenoid is open. Default: 3.0s.</span>
                     </div>
 
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Spray Controller</h3>
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Controller Type</label>
+                            <select id="settings-spray-controller-type" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
+                                <option value="esphome">ESPHome Web API</option>
+                                <option value="pi">Legacy Raspberry Pi</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">ESPHome Controller URL</label>
+                            <input type="text" id="settings-spray-controller-url" placeholder="http://squirrel-soaker-controller.local" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        </div>
+                    </div>
+
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Inactivity Extended Spray Duration (seconds)</label>
                         <input type="number" id="settings-long-duration" min="1" max="20" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
@@ -3768,6 +3785,8 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-decision-average').value = data.settings.spray_decision_average_confidence ?? 0.75;
                     document.getElementById('settings-cooldown').value = data.settings.spray_cooldown_seconds || 60;
                     document.getElementById('settings-spray-duration').value = data.settings.spray_duration || 3.0;
+                    document.getElementById('settings-spray-controller-type').value = data.settings.spray_controller_type || 'esphome';
+                    document.getElementById('settings-spray-controller-url').value = data.settings.spray_controller_url || 'http://squirrel-soaker-controller.local';
                     document.getElementById('settings-long-duration').value = data.settings.long_spray_duration || 5.0;
                     document.getElementById('settings-threshold').value = data.settings.long_spray_threshold_hours || 2.0;
                     document.getElementById('settings-retention-raw').value = data.settings.retention_days_raw || 3.0;
@@ -3857,6 +3876,8 @@ HTML_TEMPLATE = """
             const spray_decision_average_confidence = parseFloat(document.getElementById('settings-decision-average').value);
             const spray_cooldown_seconds = parseInt(document.getElementById('settings-cooldown').value);
             const spray_duration = parseFloat(document.getElementById('settings-spray-duration').value);
+            const spray_controller_type = document.getElementById('settings-spray-controller-type').value;
+            const spray_controller_url = document.getElementById('settings-spray-controller-url').value;
             const long_spray_duration = parseFloat(document.getElementById('settings-long-duration').value);
             const long_spray_threshold_hours = parseFloat(document.getElementById('settings-threshold').value);
             const retention_days_raw = parseFloat(document.getElementById('settings-retention-raw').value);
@@ -3908,6 +3929,8 @@ HTML_TEMPLATE = """
                         spray_decision_average_confidence,
                         spray_cooldown_seconds,
                         spray_duration,
+                        spray_controller_type,
+                        spray_controller_url,
                         long_spray_duration,
                         long_spray_threshold_hours,
                         retention_days_raw,
@@ -6278,26 +6301,19 @@ def sync():
 @app.route('/api/spray', methods=['POST'])
 def spray():
     global last_spray_time
-    import urllib.request
-    import urllib.parse
-    import json
     is_test = request.args.get('test') == 'true'
     try:
         duration = get_current_spray_duration()
         settings = load_settings()
-        rotation = settings.get('camera_rotation', 0)
-        roi = settings.get('video_roi', '')
-        encoded_roi = urllib.parse.quote(roi) if roi else ''
-        url = 'http://{0}:8080/spray?duration={1}&rotation={2}&roi={3}'.format(PI_IP, duration, rotation, encoded_roi)
-        req = urllib.request.Request(url, method='POST')
-        with urllib.request.urlopen(req, timeout=25) as response:
-            res_data = response.read().decode('utf-8')
-            if not is_test:
-                log_blast('manual')
-                last_spray_time = time.time()
-                if settings.get('enable_rtsp', True):
-                    start_local_video_recording(duration, "manual_spray")
-            return jsonify(json.loads(res_data))
+        success = True if is_test else trigger_spray_controller(duration)
+        if not success:
+            return jsonify({'status': 'error', 'message': 'Spray controller did not accept the command'}), 500
+        if not is_test:
+            log_blast('manual', duration=duration)
+            last_spray_time = time.time()
+            if settings.get('camera_source') in ('snapshot', 'rtsp'):
+                start_local_video_recording(duration, "manual_spray")
+        return jsonify({'status': 'success', 'duration': duration})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -6407,7 +6423,9 @@ def api_health():
             'confidence_threshold': settings.get('confidence_threshold'),
             'spray_decision_required_hits': settings.get('spray_decision_required_hits'),
             'spray_decision_window_seconds': settings.get('spray_decision_window_seconds'),
-            'spray_decision_average_confidence': settings.get('spray_decision_average_confidence')
+            'spray_decision_average_confidence': settings.get('spray_decision_average_confidence'),
+            'spray_controller_type': settings.get('spray_controller_type'),
+            'spray_controller_url': settings.get('spray_controller_url')
         }
     })
 
@@ -6705,7 +6723,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
                 ))
                 last_spray_time = current_time
                 log_blast('auto', confidence, active_model_name, filename if should_save_image else None, duration=duration)
-                trigger_thread = threading.Thread(target=trigger_solenoid_on_pi, args=(duration,))
+                trigger_thread = threading.Thread(target=trigger_spray_controller, args=(duration,))
                 trigger_thread.daemon = True
                 trigger_thread.start()
                 if should_save_image:
@@ -6839,7 +6857,7 @@ def get_eastern_time():
             offset = 5
     return utc_now - datetime.timedelta(hours=offset)
 
-def trigger_solenoid_on_pi(duration):
+def trigger_spray_on_pi(duration):
     import urllib.request
     import urllib.parse
     try:
@@ -6851,9 +6869,49 @@ def trigger_solenoid_on_pi(duration):
         req = urllib.request.Request(url, method='POST')
         with urllib.request.urlopen(req, timeout=10) as response:
             response.read()
-        log_message("[RTSP-Trigger] Sent spray request to Pi successfully.")
+        log_message("[Spray Trigger] Sent spray request to Pi successfully.")
+        return True
     except Exception as e:
-        log_message("[RTSP-Trigger] Error triggering solenoid on Pi: {}".format(e))
+        log_message("[Spray Trigger] Error triggering solenoid on Pi: {}".format(e))
+    return False
+
+def trigger_spray_on_esphome(duration):
+    import urllib.request
+    import urllib.parse
+
+    settings = load_settings()
+    base_url = str(settings.get('spray_controller_url') or '').strip().rstrip('/')
+    if not base_url:
+        log_message("[Spray Trigger] ESPHome controller URL is not configured.")
+        return False
+
+    try:
+        duration = max(0.1, min(float(duration), 10.0))
+    except Exception:
+        duration = 3.0
+
+    try:
+        encoded_duration = urllib.parse.urlencode({'value': duration})
+        number_url = "{0}/number/spray_duration/set?{1}".format(base_url, encoded_duration)
+        button_url = "{0}/button/spray/press".format(base_url)
+        req = urllib.request.Request(number_url, method='POST')
+        with urllib.request.urlopen(req, timeout=5) as response:
+            response.read()
+        req = urllib.request.Request(button_url, method='POST')
+        with urllib.request.urlopen(req, timeout=5) as response:
+            response.read()
+        log_message("[Spray Trigger] Sent {0:.1f}s spray request to ESPHome controller.".format(duration))
+        return True
+    except Exception as e:
+        log_message("[Spray Trigger] Error triggering ESPHome controller: {0}".format(e))
+    return False
+
+def trigger_spray_controller(duration):
+    settings = load_settings()
+    controller_type = str(settings.get('spray_controller_type') or 'esphome').strip().lower()
+    if controller_type == 'pi':
+        return trigger_spray_on_pi(duration)
+    return trigger_spray_on_esphome(duration)
 
 def finalize_video_recording(filepath):
     try:
@@ -7120,7 +7178,7 @@ def rtsp_thread_loop():
                                 last_spray_time = now_time
                                 log_blast('auto', confidence, active_model_name)
                                 
-                                trigger_solenoid_on_pi(duration)
+                                trigger_spray_controller(duration)
                                 
                                 now_str = local_dt.strftime("%Y%m%d_%H%M%S_%f")
                                 filename = "img_auto_{}.jpg".format(now_str)

@@ -1,5 +1,7 @@
 .env
 .venv/
+esphome/secrets.yaml
+.esphome/
 data/
 __pycache__/
 *.pyc
