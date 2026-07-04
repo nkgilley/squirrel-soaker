@@ -38,6 +38,7 @@ CAMERA_METERING = "centre"
 CAMERA_SATURATION = 1.0
 CAMERA_CONTRAST = 1.0
 CAMERA_SHARPNESS = 1.0
+CAMERA_TUNING_ENABLED = False
 MOTION_PREFILTER_ENABLED = True
 MOTION_THRESHOLD = 6.0
 MOTION_FORCE_INTERVAL_SECONDS = 30
@@ -184,6 +185,7 @@ def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, VIDEO_ROTATION, CONFIDENCE_THRESHOLD
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     global CAMERA_AWB, CAMERA_EXPOSURE, CAMERA_METERING, CAMERA_SATURATION, CAMERA_CONTRAST, CAMERA_SHARPNESS
+    global CAMERA_TUNING_ENABLED
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
     global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
     global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
@@ -224,6 +226,12 @@ def fetch_config_from_mac():
                     CAMERA_CONTRAST = float(settings['camera_contrast'])
                 if 'camera_sharpness' in settings:
                     CAMERA_SHARPNESS = float(settings['camera_sharpness'])
+                if 'camera_tuning_enabled' in settings:
+                    value = settings['camera_tuning_enabled']
+                    if isinstance(value, str):
+                        CAMERA_TUNING_ENABLED = value.strip().lower() in ('1', 'true', 'yes', 'on')
+                    else:
+                        CAMERA_TUNING_ENABLED = bool(value)
                 if 'confidence_threshold' in settings:
                     CONFIDENCE_THRESHOLD = float(settings['confidence_threshold'])
                 if 'analysis_width' in settings:
@@ -572,6 +580,8 @@ def build_still_command(width, height, jpeg_quality):
     return cmd
 
 def append_rpicam_tuning(cmd):
+    if not CAMERA_TUNING_ENABLED:
+        return
     if CAMERA_AWB:
         cmd.extend(["--awb", CAMERA_AWB])
     if CAMERA_EXPOSURE:

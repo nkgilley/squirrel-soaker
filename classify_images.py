@@ -353,6 +353,7 @@ default_settings = {
     'camera_saturation': 1.0,
     'camera_contrast': 1.0,
     'camera_sharpness': 1.0,
+    'camera_tuning_enabled': False,
     'confidence_threshold': 0.70,
     'spray_decision_required_hits': 2,
     'spray_decision_window_seconds': 12,
@@ -3517,6 +3518,10 @@ HTML_TEMPLATE = """
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Module 3 Tuning</h3>
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <input type="checkbox" id="settings-camera-tuning-enabled" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
+                            <label for="settings-camera-tuning-enabled" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable advanced camera tuning flags</label>
+                        </div>
                         <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;">
                             <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                                 <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">AWB</label>
@@ -3994,6 +3999,7 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-camera-saturation').value = data.settings.camera_saturation ?? 1.0;
                     document.getElementById('settings-camera-contrast').value = data.settings.camera_contrast ?? 1.0;
                     document.getElementById('settings-camera-sharpness').value = data.settings.camera_sharpness ?? 1.0;
+                    document.getElementById('settings-camera-tuning-enabled').checked = data.settings.camera_tuning_enabled === true;
                     document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
                     document.getElementById('settings-decision-hits').value = data.settings.spray_decision_required_hits ?? 2;
                     document.getElementById('settings-decision-window').value = data.settings.spray_decision_window_seconds ?? 12;
@@ -4096,6 +4102,7 @@ HTML_TEMPLATE = """
             const camera_saturation = parseFloat(document.getElementById('settings-camera-saturation').value);
             const camera_contrast = parseFloat(document.getElementById('settings-camera-contrast').value);
             const camera_sharpness = parseFloat(document.getElementById('settings-camera-sharpness').value);
+            const camera_tuning_enabled = document.getElementById('settings-camera-tuning-enabled').checked;
             const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
             const spray_decision_required_hits = parseInt(document.getElementById('settings-decision-hits').value);
             const spray_decision_window_seconds = parseInt(document.getElementById('settings-decision-window').value);
@@ -4159,6 +4166,7 @@ HTML_TEMPLATE = """
                         camera_saturation,
                         camera_contrast,
                         camera_sharpness,
+                        camera_tuning_enabled,
                         confidence_threshold,
                         spray_decision_required_hits,
                         spray_decision_window_seconds,
@@ -6668,6 +6676,7 @@ def api_health():
             'camera_saturation': settings.get('camera_saturation'),
             'camera_contrast': settings.get('camera_contrast'),
             'camera_sharpness': settings.get('camera_sharpness'),
+            'camera_tuning_enabled': settings.get('camera_tuning_enabled'),
             'camera_source': settings.get('camera_source'),
             'advanced_camera_sources_enabled': settings.get('advanced_camera_sources_enabled'),
             'pi_inference_enabled': settings.get('pi_inference_enabled'),

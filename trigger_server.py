@@ -99,7 +99,8 @@ def get_camera_tuning():
         'camera_metering': str(latest_settings.get('camera_metering', 'centre') or 'centre'),
         'camera_saturation': float(latest_settings.get('camera_saturation', 1.0)),
         'camera_contrast': float(latest_settings.get('camera_contrast', 1.0)),
-        'camera_sharpness': float(latest_settings.get('camera_sharpness', 1.0))
+        'camera_sharpness': float(latest_settings.get('camera_sharpness', 1.0)),
+        'camera_tuning_enabled': bool(latest_settings.get('camera_tuning_enabled', False))
     }
 
 def ensure_dir(path):
@@ -271,6 +272,8 @@ def find_camera_still_command():
 
 def append_rpicam_tuning(cmd):
     tuning = get_camera_tuning()
+    if not tuning.get('camera_tuning_enabled'):
+        return
     cmd.extend(["--awb", tuning['camera_awb']])
     cmd.extend(["--exposure", tuning['camera_exposure']])
     cmd.extend(["--metering", tuning['camera_metering']])
