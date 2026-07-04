@@ -144,6 +144,7 @@ The Pi-side scripts and services are:
 
 - `capture.py`: still capture, motion prefilter, inference upload, Pi status reporting.
 - `trigger_server.py`: local solenoid HTTP endpoint, spray video recording, backlog sync.
+- `pi_benchmark.py`: Pi-side camera/preprocessing benchmark used by the Diagnostics view.
 - `squirrel-capture.service`: runs the capture loop.
 - `squirrel-trigger.service`: runs the local trigger server.
 - `deploy_pi.sh`: copies Pi scripts/services and restarts the services.
@@ -198,6 +199,8 @@ Useful signs in the capture log:
 - `sd_write: false` in health telemetry: normal no-SD-write operation.
 - `Pruned ... old backlog files`: the Pi removed oldest fallback files to protect SD-card space.
 
+The trigger server also exposes Pi diagnostics through the Mac app. Use the web UI's **Pi Diagnostics** view to inspect GPIO state, camera command availability, CPU temperature, throttling, SD-card usage, `/dev/shm` usage, and backlog size. The same view can test still capture, record a short no-spray video, sync the SD backlog, and run the Pi benchmark. Relay pulse testing is available there but guarded by an explicit confirmation.
+
 Manual hardware spray button:
 
 - Default button pin is BCM GPIO 27, which is physical header pin 13, using the Pi's internal pull-up resistor.
@@ -213,10 +216,12 @@ Most runtime behavior is managed from the web UI Settings view.
 
 Important settings:
 
-- **Camera Source**: `snapshot` for Wyze/IP-camera snapshots, `pi` for legacy Pi uploads, or `rtsp` for the old RTSP reader.
+- **Camera Source**: `pi` for the current Raspberry Pi 5 upload path. Legacy snapshot/RTSP fields are hidden behind the advanced camera-source toggle.
 - **Snapshot URL**: optional IP-camera/Wyze snapshot URL if Camera Source is switched back to `snapshot`.
 - **Analysis Interval**: how often the app fetches and analyzes a frame. Current default is 5 seconds.
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
+- **Camera/Video Rotation**: still and video rotation are separate settings because Pi camera still and video paths can need different orientation values.
+- **Camera Module 3 Tuning**: AWB, exposure, metering, saturation, contrast, and sharpness are configurable. Defaults are neutral for a normal Camera Module 3.
 - **Daylight Schedule**: nighttime capture pause can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable.
 - **Analysis Size and JPEG Quality**: smaller/faster transient frames.
 - **Review JPEG Quality**: higher quality frames saved for classification.
@@ -259,6 +264,7 @@ Dashboard health graph:
 - **Model**: raw model inference time.
 - **Motion**: frame-to-frame motion score on the secondary axis.
 - **Frame Age**: seconds since the Mac app last received an analyzed frame.
+- **CPU Temp**, **SD Used %**, and **SD Backlog**: Pi health signals that show heat, storage pressure, and whether fallback files are accumulating on the Pi SD card.
 
 ---
 
@@ -277,8 +283,10 @@ Dashboard health graph:
 
 - The Pi is intentionally RAM-first to reduce SD-card wear.
 - `~/squirrel_soaker/captures` on the Pi is a legacy backlog directory, not the normal storage location.
+- Spray videos are recorded in `/dev/shm/squirrel_soaker` and removed from the Pi after a successful upload.
+- If the Mac app is down during a save/upload, the Pi writes only the failed file to the SD backlog, prunes that backlog by age/size/count, and syncs it back when the Mac is reachable.
 - Server-side persistent data lives under `data/`.
-- Live snapshots update from the latest analyzed Wyze/IP-camera snapshot frame.
+- Live snapshots update from the latest analyzed Pi-upload frame.
 - If the live view slows down, check the health graph first. Snapshot fetch time and model time are the main signals.
 
 ---

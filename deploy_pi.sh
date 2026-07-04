@@ -6,8 +6,8 @@ PI_APP_DIR="${PI_APP_DIR:-/home/nolan/squirrel_soaker}"
 
 echo "Deploying Raspberry Pi services to ${PI_HOST}:${PI_APP_DIR}"
 
-ssh "${PI_HOST}" "mkdir -p '${PI_APP_DIR}'"
-scp capture.py trigger_server.py camera_stream.py "${PI_HOST}:${PI_APP_DIR}/"
+ssh "${PI_HOST}" "mkdir -p '${PI_APP_DIR}' '${PI_APP_DIR}/captures'"
+scp capture.py trigger_server.py pi_benchmark.py camera_stream.py "${PI_HOST}:${PI_APP_DIR}/"
 scp squirrel-capture.service squirrel-trigger.service squirrel-stream.service "${PI_HOST}:/tmp/"
 
 ssh "${PI_HOST}" "

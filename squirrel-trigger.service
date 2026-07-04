@@ -1,14 +1,20 @@
 [Unit]
 Description=Squirrel Soaker Solenoid Trigger Server
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
 User=nolan
 WorkingDirectory=/home/nolan/squirrel_soaker
+Environment=PYTHONUNBUFFERED=1
+Environment=BUTTON_PIN=27
+Environment=BUTTON_ACTIVE_LOW=true
 ExecStart=/usr/bin/python3 -u /home/nolan/squirrel_soaker/trigger_server.py
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

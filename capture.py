@@ -11,6 +11,7 @@ import json
 import shutil
 import math
 import fcntl
+import platform
 
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30
@@ -24,12 +25,19 @@ SUNSET_OFFSET_MINUTES = 0
 ROTATION = 180
 ROI = "0.05,0.15,0.3,0.3"
 VIDEO_ROI = "0.0,0.0,0.6,0.6"
+VIDEO_ROTATION = 180
 WIDTH = 1280
 HEIGHT = 960
 ANALYSIS_WIDTH = 960
 ANALYSIS_HEIGHT = 720
 ANALYSIS_JPEG_QUALITY = 65
 REVIEW_JPEG_QUALITY = 90
+CAMERA_AWB = "auto"
+CAMERA_EXPOSURE = "normal"
+CAMERA_METERING = "centre"
+CAMERA_SATURATION = 1.0
+CAMERA_CONTRAST = 1.0
+CAMERA_SHARPNESS = 1.0
 MOTION_PREFILTER_ENABLED = True
 MOTION_THRESHOLD = 6.0
 MOTION_FORCE_INTERVAL_SECONDS = 30
@@ -173,8 +181,9 @@ def get_next_daylight_start(dt):
     return next_start, next_source
 
 def fetch_config_from_mac():
-    global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD
+    global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, VIDEO_ROTATION, CONFIDENCE_THRESHOLD
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
+    global CAMERA_AWB, CAMERA_EXPOSURE, CAMERA_METERING, CAMERA_SATURATION, CAMERA_CONTRAST, CAMERA_SHARPNESS
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
     global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
     global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
@@ -199,6 +208,22 @@ def fetch_config_from_mac():
                     ROI = str(settings['camera_roi']).strip()
                 if 'video_roi' in settings:
                     VIDEO_ROI = str(settings['video_roi']).strip()
+                if 'video_rotation' in settings:
+                    VIDEO_ROTATION = int(settings['video_rotation'])
+                else:
+                    VIDEO_ROTATION = ROTATION
+                if 'camera_awb' in settings:
+                    CAMERA_AWB = str(settings['camera_awb']).strip() or "auto"
+                if 'camera_exposure' in settings:
+                    CAMERA_EXPOSURE = str(settings['camera_exposure']).strip() or "normal"
+                if 'camera_metering' in settings:
+                    CAMERA_METERING = str(settings['camera_metering']).strip() or "centre"
+                if 'camera_saturation' in settings:
+                    CAMERA_SATURATION = float(settings['camera_saturation'])
+                if 'camera_contrast' in settings:
+                    CAMERA_CONTRAST = float(settings['camera_contrast'])
+                if 'camera_sharpness' in settings:
+                    CAMERA_SHARPNESS = float(settings['camera_sharpness'])
                 if 'confidence_threshold' in settings:
                     CONFIDENCE_THRESHOLD = float(settings['confidence_threshold'])
                 if 'analysis_width' in settings:
@@ -235,12 +260,12 @@ def fetch_config_from_mac():
                 if 'sunset_offset_minutes' in settings:
                     SUNSET_OFFSET_MINUTES = int(settings['sunset_offset_minutes'])
                 daylight_start, daylight_end, daylight_source = get_daylight_window(get_eastern_time())
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoROI={13}, Threshold={14:.2f}, Daylight={15} {16}-{17}".format(
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoRotation={13}, VideoROI={14}, Threshold={15:.2f}, Daylight={16} {17}-{18}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     WIDTH, HEIGHT, REVIEW_JPEG_QUALITY,
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
-                    ROTATION, ROI, VIDEO_ROI, CONFIDENCE_THRESHOLD,
+                    ROTATION, ROI, VIDEO_ROTATION, VIDEO_ROI, CONFIDENCE_THRESHOLD,
                     daylight_source,
                     daylight_start.strftime("%H:%M"),
                     daylight_end.strftime("%H:%M")
@@ -275,6 +300,102 @@ def get_backlog_files():
             pass
     files.sort(key=lambda item: item['mtime'])
     return files
+
+def bytes_to_mb(value):
+    try:
+        return round(float(value) / (1024.0 * 1024.0), 1)
+    except Exception:
+        return None
+
+def read_first_line(path):
+    try:
+        with open(path, 'r') as f:
+            return f.readline().strip()
+    except Exception:
+        return None
+
+def get_backlog_summary():
+    files = get_backlog_files()
+    total_bytes = sum(info.get('size', 0) for info in files)
+    return {
+        'backlog_files': len(files),
+        'backlog_bytes': total_bytes,
+        'backlog_mb': bytes_to_mb(total_bytes)
+    }
+
+def get_system_health_snapshot():
+    snapshot = {
+        'hostname': platform.node(),
+        'python_version': platform.python_version()
+    }
+
+    temp_raw = read_first_line('/sys/class/thermal/thermal_zone0/temp')
+    if temp_raw:
+        try:
+            snapshot['cpu_temp_c'] = round(float(temp_raw) / 1000.0, 1)
+        except Exception:
+            pass
+
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+        snapshot['load_1m'] = round(load_1m, 2)
+        snapshot['load_5m'] = round(load_5m, 2)
+        snapshot['load_15m'] = round(load_15m, 2)
+    except Exception:
+        pass
+
+    try:
+        usage = shutil.disk_usage('/')
+        snapshot['disk_free_mb'] = bytes_to_mb(usage.free)
+        snapshot['disk_used_percent'] = round((usage.used / float(usage.total)) * 100.0, 1)
+    except Exception:
+        pass
+
+    try:
+        usage = shutil.disk_usage('/dev/shm')
+        snapshot['shm_free_mb'] = bytes_to_mb(usage.free)
+        snapshot['shm_used_percent'] = round((usage.used / float(usage.total)) * 100.0, 1)
+    except Exception:
+        pass
+
+    try:
+        meminfo = {}
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    meminfo[parts[0].rstrip(':')] = int(parts[1])
+        if 'MemTotal' in meminfo:
+            snapshot['mem_total_mb'] = round(meminfo['MemTotal'] / 1024.0, 1)
+        if 'MemAvailable' in meminfo:
+            snapshot['mem_available_mb'] = round(meminfo['MemAvailable'] / 1024.0, 1)
+    except Exception:
+        pass
+
+    try:
+        proc = subprocess.Popen(['vcgencmd', 'get_throttled'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout_data, _stderr_data = proc.communicate(timeout=2)
+        if proc.returncode == 0:
+            raw = stdout_data.decode('utf-8', errors='ignore').strip()
+            snapshot['throttled_raw'] = raw
+            value = int(raw.split('=')[-1], 16)
+            snapshot['throttled_now'] = bool(value & 0x1 or value & 0x2 or value & 0x4 or value & 0x8)
+            snapshot['throttled_ever'] = bool(value & 0x10000 or value & 0x20000 or value & 0x40000 or value & 0x80000)
+    except Exception:
+        pass
+
+    snapshot.update(get_backlog_summary())
+    warnings = []
+    if snapshot.get('backlog_files', 0) > 0:
+        warnings.append('sd_backlog_present')
+    if snapshot.get('disk_used_percent', 0) >= 85:
+        warnings.append('sd_card_high_usage')
+    if snapshot.get('cpu_temp_c', 0) >= 75:
+        warnings.append('cpu_hot')
+    if snapshot.get('throttled_now'):
+        warnings.append('pi_throttled')
+    snapshot['warnings'] = warnings
+    return snapshot
 
 def prune_backlog(reason='capacity'):
     now = time.time()
@@ -343,6 +464,7 @@ def report_pi_status(status):
     import urllib.request
 
     try:
+        status.update(get_system_health_snapshot())
         url = "http://{0}:5001/api/pi_status".format(MAC_IP)
         payload = json.dumps(status).encode('utf-8')
         req = urllib.request.Request(
@@ -432,6 +554,7 @@ def build_still_command(width, height, jpeg_quality):
             print("[Camera] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, ROTATION))
         if ROI:
             cmd.extend(["--roi", ROI])
+        append_rpicam_tuning(cmd)
         return cmd
 
     cmd = [
@@ -448,13 +571,24 @@ def build_still_command(width, height, jpeg_quality):
         cmd.extend(["-roi", ROI])
     return cmd
 
+def append_rpicam_tuning(cmd):
+    if CAMERA_AWB:
+        cmd.extend(["--awb", CAMERA_AWB])
+    if CAMERA_EXPOSURE:
+        cmd.extend(["--exposure", CAMERA_EXPOSURE])
+    if CAMERA_METERING:
+        cmd.extend(["--metering", CAMERA_METERING])
+    cmd.extend(["--saturation", str(CAMERA_SATURATION)])
+    cmd.extend(["--contrast", str(CAMERA_CONTRAST)])
+    cmd.extend(["--sharpness", str(CAMERA_SHARPNESS)])
+
 def trigger_spray_locally(duration):
     import urllib.request
     import urllib.parse
 
     try:
         encoded_roi = urllib.parse.quote(VIDEO_ROI) if VIDEO_ROI else ''
-        url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}'.format(duration, ROTATION, encoded_roi)
+        url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}'.format(duration, VIDEO_ROTATION, encoded_roi)
         req = urllib.request.Request(url, method='POST')
         with urllib.request.urlopen(req, timeout=25):
             print("[Trigger] Spray triggered successfully with duration {0}s.".format(duration))

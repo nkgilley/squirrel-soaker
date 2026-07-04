@@ -10,6 +10,8 @@ import subprocess
 import threading
 import shutil
 import fcntl
+import json
+import platform
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 GPIO_BACKEND = None
@@ -46,12 +48,16 @@ BACKLOG_MAX_AGE_SECONDS = 24 * 60 * 60
 VIDEO_START_LEAD_SECONDS = 1.0
 VIDEO_POST_ROLL_SECONDS = 1.0
 CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
+VIDEO_WIDTH = 1280
+VIDEO_HEIGHT = 720
 sync_lock = threading.Lock()
 spray_lock = threading.Lock()
+latest_settings = {}
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def get_local_time_and_defaults():
+    global latest_settings
     local_time = datetime.datetime.now()
     default_rot = 0
     default_roi = None
@@ -65,7 +71,6 @@ def get_local_time_and_defaults():
         print("[Video] Warning: could not import capture config: {0}".format(e))
 
     try:
-        import json
         import urllib.request
         url = "http://{0}:5001/api/settings".format(MAC_IP)
         req = urllib.request.Request(url, method='GET')
@@ -73,14 +78,29 @@ def get_local_time_and_defaults():
             data = json.loads(response.read().decode('utf-8'))
         if data.get('status') == 'success':
             settings = data.get('settings', {})
+            latest_settings = settings
             if 'camera_rotation' in settings:
                 default_rot = int(settings['camera_rotation'])
+            if 'video_rotation' in settings:
+                default_rot = int(settings['video_rotation'])
             if 'video_roi' in settings:
                 default_roi = str(settings['video_roi']).strip()
     except Exception as e:
         print("[Video] Warning: could not fetch video settings from Mac: {0}".format(e))
 
     return local_time, default_rot, default_roi
+
+def get_camera_tuning():
+    if not latest_settings:
+        get_local_time_and_defaults()
+    return {
+        'camera_awb': str(latest_settings.get('camera_awb', 'auto') or 'auto'),
+        'camera_exposure': str(latest_settings.get('camera_exposure', 'normal') or 'normal'),
+        'camera_metering': str(latest_settings.get('camera_metering', 'centre') or 'centre'),
+        'camera_saturation': float(latest_settings.get('camera_saturation', 1.0)),
+        'camera_contrast': float(latest_settings.get('camera_contrast', 1.0)),
+        'camera_sharpness': float(latest_settings.get('camera_sharpness', 1.0))
+    }
 
 def ensure_dir(path):
     if not os.path.exists(path):
@@ -109,6 +129,99 @@ def get_backlog_files():
             pass
     files.sort(key=lambda item: item['mtime'])
     return files
+
+def bytes_to_mb(value):
+    try:
+        return round(float(value) / (1024.0 * 1024.0), 1)
+    except Exception:
+        return None
+
+def read_first_line(path):
+    try:
+        with open(path, 'r') as f:
+            return f.readline().strip()
+    except Exception:
+        return None
+
+def get_backlog_summary():
+    files = get_backlog_files()
+    total_bytes = sum(info.get('size', 0) for info in files)
+    return {
+        'backlog_files': len(files),
+        'backlog_bytes': total_bytes,
+        'backlog_mb': bytes_to_mb(total_bytes)
+    }
+
+def get_system_health_snapshot():
+    snapshot = {
+        'hostname': platform.node(),
+        'python_version': platform.python_version(),
+        'gpio_backend': GPIO_BACKEND or 'none',
+        'solenoid_pin': SOLENOID_PIN,
+        'button_pin': BUTTON_PIN,
+        'button_active_low': BUTTON_ACTIVE_LOW,
+        'button_pressed': is_button_pressed() if gpio_available() else None,
+        'video_tmp_dir': VIDEO_TMP_DIR,
+        'captures_dir': CAPTURES_DIR,
+        'camera_video_command': find_camera_video_command(),
+        'camera_still_command': find_camera_still_command()
+    }
+    temp_raw = read_first_line('/sys/class/thermal/thermal_zone0/temp')
+    if temp_raw:
+        try:
+            snapshot['cpu_temp_c'] = round(float(temp_raw) / 1000.0, 1)
+        except Exception:
+            pass
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+        snapshot['load_1m'] = round(load_1m, 2)
+        snapshot['load_5m'] = round(load_5m, 2)
+        snapshot['load_15m'] = round(load_15m, 2)
+    except Exception:
+        pass
+    for key, path in (('disk', '/'), ('shm', '/dev/shm')):
+        try:
+            usage = shutil.disk_usage(path)
+            snapshot['{0}_free_mb'.format(key)] = bytes_to_mb(usage.free)
+            snapshot['{0}_used_percent'.format(key)] = round((usage.used / float(usage.total)) * 100.0, 1)
+        except Exception:
+            pass
+    try:
+        meminfo = {}
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    meminfo[parts[0].rstrip(':')] = int(parts[1])
+        if 'MemTotal' in meminfo:
+            snapshot['mem_total_mb'] = round(meminfo['MemTotal'] / 1024.0, 1)
+        if 'MemAvailable' in meminfo:
+            snapshot['mem_available_mb'] = round(meminfo['MemAvailable'] / 1024.0, 1)
+    except Exception:
+        pass
+    try:
+        proc = subprocess.Popen(['vcgencmd', 'get_throttled'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout_data, _stderr_data = proc.communicate(timeout=2)
+        if proc.returncode == 0:
+            raw = stdout_data.decode('utf-8', errors='ignore').strip()
+            snapshot['throttled_raw'] = raw
+            value = int(raw.split('=')[-1], 16)
+            snapshot['throttled_now'] = bool(value & 0x1 or value & 0x2 or value & 0x4 or value & 0x8)
+            snapshot['throttled_ever'] = bool(value & 0x10000 or value & 0x20000 or value & 0x40000 or value & 0x80000)
+    except Exception:
+        pass
+    snapshot.update(get_backlog_summary())
+    warnings = []
+    if snapshot.get('backlog_files', 0) > 0:
+        warnings.append('sd_backlog_present')
+    if snapshot.get('disk_used_percent', 0) >= 85:
+        warnings.append('sd_card_high_usage')
+    if snapshot.get('cpu_temp_c', 0) >= 75:
+        warnings.append('cpu_hot')
+    if snapshot.get('throttled_now'):
+        warnings.append('pi_throttled')
+    snapshot['warnings'] = warnings
+    return snapshot
 
 def prune_backlog(reason='capacity'):
     now = time.time()
@@ -149,14 +262,30 @@ def find_camera_video_command():
             return binary
     return 'raspivid'
 
+def find_camera_still_command():
+    for binary in ('rpicam-still', 'libcamera-still', 'raspistill'):
+        path = shutil.which(binary)
+        if path:
+            return binary
+    return 'raspistill'
+
+def append_rpicam_tuning(cmd):
+    tuning = get_camera_tuning()
+    cmd.extend(["--awb", tuning['camera_awb']])
+    cmd.extend(["--exposure", tuning['camera_exposure']])
+    cmd.extend(["--metering", tuning['camera_metering']])
+    cmd.extend(["--saturation", str(tuning['camera_saturation'])])
+    cmd.extend(["--contrast", str(tuning['camera_contrast'])])
+    cmd.extend(["--sharpness", str(tuning['camera_sharpness'])])
+
 def build_video_command(duration_ms, filepath, rotation=None, roi=None):
     camera_cmd = find_camera_video_command()
     if camera_cmd in ('rpicam-vid', 'libcamera-vid'):
         cmd = [
             camera_cmd,
             "--timeout", str(duration_ms),
-            "--width", "1280",
-            "--height", "720",
+            "--width", str(VIDEO_WIDTH),
+            "--height", str(VIDEO_HEIGHT),
             "--output", filepath,
             "--codec", "libav",
             "--libav-format", "mp4",
@@ -169,16 +298,17 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None):
             print("[Video] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, rotation))
         if roi:
             cmd.extend(["--roi", roi])
+        append_rpicam_tuning(cmd)
         return cmd
 
-    cmd = ["raspivid", "-t", str(duration_ms), "-w", "1280", "-h", "720", "-o", filepath]
+    cmd = ["raspivid", "-t", str(duration_ms), "-w", str(VIDEO_WIDTH), "-h", str(VIDEO_HEIGHT), "-o", filepath]
     if rotation in [90, 180, 270]:
         cmd.extend(["-rot", str(rotation)])
     if roi:
         cmd.extend(["-roi", roi])
     return cmd
 
-def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
+def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None, upload=True, name_prefix='vid'):
     import urllib.parse
 
     local_time, default_rot, default_roi = get_local_time_and_defaults()
@@ -187,7 +317,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
 
     ensure_dir(VIDEO_TMP_DIR)
 
-    filename = "vid_{0}.mp4".format(local_time.strftime("%Y%m%d_%H%M%S"))
+    filename = "{0}_{1}.mp4".format(name_prefix, local_time.strftime("%Y%m%d_%H%M%S"))
     filepath = os.path.join(VIDEO_TMP_DIR, filename)
 
     cmd = build_video_command(duration_ms, filepath, rotation=rot, roi=selected_roi)
@@ -208,6 +338,15 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
                 lock_file.close()
         print("[Video] Finished recording in RAM: {0}".format(filepath))
 
+        if not upload:
+            file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+            try:
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+            except Exception:
+                pass
+            return {'status': 'success', 'filename': filename, 'bytes': file_size, 'uploaded': False}
+
         encoded = urllib.parse.quote(filename)
         url = "http://{0}:5001/api/upload_video?filename={1}".format(MAC_IP, encoded)
         try:
@@ -215,6 +354,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
             if os.path.exists(filepath):
                 os.remove(filepath)
             print("[Video] Uploaded {0} from RAM and removed local copy.".format(filename))
+            return {'status': 'success', 'filename': filename, 'uploaded': True}
         except Exception as e:
             ensure_dir(CAPTURES_DIR)
             prune_backlog('before saving a failed video upload')
@@ -222,6 +362,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
             shutil.move(filepath, backlog_path)
             print("[Video] Upload failed ({0}); saved video to SD backlog: {1}".format(e, backlog_path))
             prune_backlog('after saving a failed video upload')
+            return {'status': 'backlogged', 'filename': filename, 'path': backlog_path, 'error': str(e)}
     except subprocess.TimeoutExpired:
         print("[Video] Error recording video: camera command timed out after {0}s".format(timeout_seconds))
         try:
@@ -229,6 +370,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
                 os.remove(filepath)
         except Exception:
             pass
+        return {'status': 'error', 'message': 'camera command timed out'}
     except Exception as e:
         if started_event:
             started_event.set()
@@ -238,6 +380,76 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
                 os.remove(filepath)
         except Exception:
             pass
+        return {'status': 'error', 'message': str(e)}
+
+def build_still_command(filepath, rotation=None, roi=None):
+    camera_cmd = find_camera_still_command()
+    if camera_cmd in ('rpicam-still', 'libcamera-still'):
+        cmd = [
+            camera_cmd,
+            "--width", "1280",
+            "--height", "960",
+            "--quality", "80",
+            "--output", filepath,
+            "--timeout", "1000",
+            "--nopreview",
+            "--immediate",
+            "--encoding", "jpg"
+        ]
+        if rotation in [0, 180]:
+            cmd.extend(["--rotation", str(rotation)])
+        if roi:
+            cmd.extend(["--roi", roi])
+        append_rpicam_tuning(cmd)
+        return cmd
+    cmd = [camera_cmd, "-w", "1280", "-h", "960", "-q", "80", "-o", filepath, "-t", "1000"]
+    if rotation in [90, 180, 270]:
+        cmd.extend(["-rot", str(rotation)])
+    if roi:
+        cmd.extend(["-roi", roi])
+    return cmd
+
+def test_camera_capture():
+    local_time, rot, roi = get_local_time_and_defaults()
+    ensure_dir(VIDEO_TMP_DIR)
+    filepath = os.path.join(VIDEO_TMP_DIR, "camera_test_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S")))
+    cmd = build_still_command(filepath, rotation=rot, roi=roi)
+    lock_file = open(CAMERA_LOCK_FILE, 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        subprocess.check_call(cmd, timeout=15)
+    finally:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
+    size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+    try:
+        os.remove(filepath)
+    except Exception:
+        pass
+    return {'status': 'success', 'bytes': size, 'rotation': rot, 'roi': roi}
+
+def run_benchmark(iterations=3):
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pi_benchmark.py')
+    if not os.path.exists(script):
+        return {'status': 'error', 'message': 'pi_benchmark.py is not deployed'}
+    proc = subprocess.Popen(
+        [sys.executable, script, '--json', '--iterations', str(iterations)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    stdout_data, stderr_data = proc.communicate(timeout=90)
+    stdout_text = stdout_data.decode('utf-8', errors='ignore')
+    stderr_text = stderr_data.decode('utf-8', errors='ignore')
+    try:
+        parsed = json.loads(stdout_text)
+    except Exception:
+        parsed = {'status': 'error', 'message': 'benchmark returned non-json output', 'stdout': stdout_text[-1000:]}
+    parsed['returncode'] = proc.returncode
+    if stderr_text:
+        parsed['stderr_tail'] = stderr_text[-1000:]
+    return parsed
 
 def post_file(url, filepath, content_type, timeout=20):
     import urllib.request
@@ -493,9 +705,84 @@ class TriggerHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(b'{"status":"success","message":"sync started"}')
+        elif parsed_path.path == '/test_camera':
+            try:
+                self.send_json({'status': 'success', 'result': test_camera_capture()})
+            except Exception as e:
+                self.send_json({'status': 'error', 'message': str(e)}, 500)
+        elif parsed_path.path == '/test_video':
+            query = parse_qs(parsed_path.query)
+            duration = 1.0
+            if 'duration' in query:
+                try:
+                    duration = max(0.5, min(float(query['duration'][0]), 5.0))
+                except ValueError:
+                    pass
+            result = record_video(
+                duration_ms=int(duration * 1000),
+                upload=True,
+                name_prefix='vid_test'
+            )
+            code = 200 if result.get('status') in ('success', 'backlogged') else 500
+            self.send_json({'status': result.get('status', 'unknown'), 'result': result}, code)
+        elif parsed_path.path == '/test_relay':
+            query = parse_qs(parsed_path.query)
+            confirmed = query.get('confirm', ['false'])[0].lower() in ('1', 'true', 'yes', 'on')
+            if not confirmed:
+                self.send_json({'status': 'error', 'message': 'confirm=true is required for relay tests'}, 400)
+                return
+            duration = 0.2
+            if 'duration' in query:
+                try:
+                    duration = max(0.05, min(float(query['duration'][0]), 1.0))
+                except ValueError:
+                    pass
+            try:
+                if gpio_available():
+                    set_solenoid(True)
+                    time.sleep(duration)
+                    set_solenoid(False)
+                else:
+                    time.sleep(duration)
+                self.send_json({'status': 'success', 'message': 'relay pulsed', 'duration': duration})
+            except Exception as e:
+                try:
+                    set_solenoid(False)
+                except Exception:
+                    pass
+                self.send_json({'status': 'error', 'message': str(e)}, 500)
+        elif parsed_path.path == '/benchmark':
+            query = parse_qs(parsed_path.query)
+            iterations = 3
+            if 'iterations' in query:
+                try:
+                    iterations = max(1, min(int(query['iterations'][0]), 10))
+                except ValueError:
+                    pass
+            try:
+                result = run_benchmark(iterations=iterations)
+                code = 200 if result.get('status') != 'error' else 500
+                self.send_json({'status': result.get('status', 'success'), 'result': result}, code)
+            except Exception as e:
+                self.send_json({'status': 'error', 'message': str(e)}, 500)
         else:
             self.send_response(404)
             self.end_headers()
+
+    def do_GET(self):
+        from urllib.parse import urlparse
+        parsed_path = urlparse(self.path)
+        if parsed_path.path == '/diagnostics':
+            self.send_json({'status': 'success', 'diagnostics': get_system_health_snapshot()})
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def send_json(self, payload, status_code=200):
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode('utf-8'))
 
 def run():
     if setup_gpio():

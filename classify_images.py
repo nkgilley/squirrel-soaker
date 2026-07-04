@@ -345,7 +345,14 @@ default_settings = {
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
     'camera_rotation': 180,
     'camera_roi': '0.05,0.15,0.3,0.3',
+    'video_rotation': 180,
     'video_roi': '0.0,0.0,0.6,0.6',
+    'camera_awb': 'auto',
+    'camera_exposure': 'normal',
+    'camera_metering': 'centre',
+    'camera_saturation': 1.0,
+    'camera_contrast': 1.0,
+    'camera_sharpness': 1.0,
     'confidence_threshold': 0.70,
     'spray_decision_required_hits': 2,
     'spray_decision_window_seconds': 12,
@@ -368,6 +375,9 @@ default_settings = {
     'retention_days_videos': 14,
     'active_model': 'yolov8n-oiv7.pt',
     'camera_source': os.environ.get('CAMERA_SOURCE', 'pi'),
+    'advanced_camera_sources_enabled': False,
+    'pi_inference_enabled': False,
+    'pi_inference_shadow_mode': True,
     'snapshot_url': DEFAULT_SNAPSHOT_URL,
     'enable_rtsp': False,
     'rtsp_stream_url': DEFAULT_STREAM_URL,
@@ -456,6 +466,11 @@ def add_health_sample(source, pi=None, predict=None):
         'motion_score': pi.get('motion_score'),
         'input_bytes': predict.get('input_bytes') or pi.get('file_bytes'),
         'live_bytes': predict.get('live_bytes'),
+        'cpu_temp_c': pi.get('cpu_temp_c'),
+        'disk_used_percent': pi.get('disk_used_percent'),
+        'shm_used_percent': pi.get('shm_used_percent'),
+        'mem_available_mb': pi.get('mem_available_mb'),
+        'backlog_files': pi.get('backlog_files'),
         'confidence': predict.get('confidence') if predict.get('confidence') is not None else pi.get('confidence')
     }
     health_history.append(sample)
@@ -2392,6 +2407,7 @@ HTML_TEMPLATE = """
         <button id="mob-tab-squirrel" class="nav-tab" onclick="setViewMode('squirrel')">Squirrels 🐿️</button>
         <button id="mob-tab-not_squirrel" class="nav-tab" onclick="setViewMode('not_squirrel')">Not Squirrels ❌</button>
         <button id="mob-tab-train" class="nav-tab" onclick="setViewMode('train')">Train 🧠</button>
+        <button id="mob-tab-diagnostics" class="nav-tab" onclick="setViewMode('diagnostics')">Diagnostics 🧪</button>
         <button id="mob-tab-settings" class="nav-tab" onclick="setViewMode('settings')">Settings ⚙️</button>
         <button id="mob-tab-logs" class="nav-tab" onclick="setViewMode('logs')">Logs 📋</button>
     </div>
@@ -2426,6 +2442,7 @@ HTML_TEMPLATE = """
                         <button id="mode-squirrel" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('squirrel')">Review Squirrels</button>
                         <button id="mode-not_squirrel" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('not_squirrel')">Review Not Squirrels</button>
                         <button id="mode-train" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('train')">Train Model 🧠</button>
+                        <button id="mode-diagnostics" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('diagnostics')">Pi Diagnostics 🧪</button>
                         <button id="mode-settings" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('settings')">Settings ⚙️</button>
                         <button id="mode-logs" class="btn" style="justify-content: center; background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);" onclick="setViewMode('logs')">Classifier Logs 📋</button>
                     </div>
@@ -2656,7 +2673,7 @@ HTML_TEMPLATE = """
                 logsPollingInterval = null;
             }
             
-            const modes = ['dashboard', 'videos', 'queue', 'squirrel', 'not_squirrel', 'train', 'settings', 'logs'];
+            const modes = ['dashboard', 'videos', 'queue', 'squirrel', 'not_squirrel', 'train', 'diagnostics', 'settings', 'logs'];
             modes.forEach(m => {
                 const btn = document.getElementById(`mode-${m}`);
                 if (btn) {
@@ -3028,6 +3045,35 @@ HTML_TEMPLATE = """
                             borderColor: '#22d3ee',
                             backgroundColor: 'rgba(34, 211, 238, 0.12)',
                             borderDash: [2, 3],
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'CPU Temp',
+                            data: series('cpu_temp_c'),
+                            borderColor: '#fb7185',
+                            backgroundColor: 'rgba(251, 113, 133, 0.12)',
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'SD Used %',
+                            data: series('disk_used_percent'),
+                            borderColor: '#f97316',
+                            backgroundColor: 'rgba(249, 115, 22, 0.12)',
+                            borderDash: [6, 3],
+                            tension: 0.25,
+                            spanGaps: true,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'SD Backlog',
+                            data: series('backlog_files'),
+                            borderColor: '#eab308',
+                            backgroundColor: 'rgba(234, 179, 8, 0.12)',
+                            borderDash: [2, 2],
                             tension: 0.25,
                             spanGaps: true,
                             yAxisID: 'y1'
@@ -3449,6 +3495,15 @@ HTML_TEMPLATE = """
                     </div>
 
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Pi Video Rotation (Degrees)</label>
+                        <select id="settings-video-rotation" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
+                            <option value="0">0° (Default)</option>
+                            <option value="180">180°</option>
+                        </select>
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Separate orientation for spray videos, because still and video paths can differ on Pi camera drivers.</span>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Camera Region of Interest (ROI)</label>
                         <input type="text" id="settings-roi" placeholder="x,y,w,h (e.g. 0.05,0.15,0.3,0.3)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for still captures. Set empty to disable.</span>
@@ -3458,6 +3513,52 @@ HTML_TEMPLATE = """
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Video Region of Interest (Video ROI)</label>
                         <input type="text" id="settings-video-roi" placeholder="x,y,w,h (e.g. 0.0,0.0,0.6,0.6)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for video recordings. Set empty to disable.</span>
+                    </div>
+
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Module 3 Tuning</h3>
+                        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">AWB</label>
+                                <select id="settings-camera-awb" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                                    <option value="auto">auto</option>
+                                    <option value="daylight">daylight</option>
+                                    <option value="cloudy">cloudy</option>
+                                    <option value="tungsten">tungsten</option>
+                                    <option value="fluorescent">fluorescent</option>
+                                    <option value="indoor">indoor</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Exposure</label>
+                                <select id="settings-camera-exposure" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                                    <option value="normal">normal</option>
+                                    <option value="short">short</option>
+                                    <option value="long">long</option>
+                                    <option value="sport">sport</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Metering</label>
+                                <select id="settings-camera-metering" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                                    <option value="centre">centre</option>
+                                    <option value="spot">spot</option>
+                                    <option value="average">average</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Saturation</label>
+                                <input type="number" id="settings-camera-saturation" min="0" max="2" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Contrast</label>
+                                <input type="number" id="settings-camera-contrast" min="0" max="2" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sharpness</label>
+                                <input type="number" id="settings-camera-sharpness" min="0" max="2" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                        </div>
                     </div>
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
@@ -3546,6 +3647,13 @@ HTML_TEMPLATE = """
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Source</h3>
 
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <input type="checkbox" id="settings-advanced-camera-sources" onchange="updateAdvancedCameraSourcesVisibility()" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
+                            <label for="settings-advanced-camera-sources" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Show legacy snapshot/RTSP sources</label>
+                        </div>
+
+                        <div id="settings-advanced-camera-source-fields" style="display: none; flex-direction: column; gap: 1rem;">
+
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Frame Source</label>
                             <select id="settings-camera-source" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
@@ -3576,6 +3684,7 @@ HTML_TEMPLATE = """
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Training Stills Motion Save Interval (minutes)</label>
                             <input type="number" id="settings-rtsp-motion-interval" min="1" max="60" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                             <span style="font-size: 0.75rem; color: var(--text-secondary);">Minimum time to wait between auto-saving negative candidate images to data/raw/ when motion is detected. Default: 5 min.</span>
+                        </div>
                         </div>
                     </div>
 
@@ -3655,6 +3764,16 @@ HTML_TEMPLATE = """
                                 <!-- populated dynamically -->
                             </select>
                             <span style="font-size: 0.75rem; color: var(--text-secondary);">Select the model used for real-time squirrel detection. YOLO (.pt) or ResNet-18 (.pth).</span>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <input type="checkbox" id="settings-pi-inference-enabled" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
+                            <label for="settings-pi-inference-enabled" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable Pi-side inference experiments</label>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <input type="checkbox" id="settings-pi-inference-shadow" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
+                            <label for="settings-pi-inference-shadow" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Shadow mode only for Pi inference</label>
                         </div>
 
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
@@ -3781,6 +3900,68 @@ HTML_TEMPLATE = """
             }
         }
 
+        function updateAdvancedCameraSourcesVisibility() {
+            const checkbox = document.getElementById('settings-advanced-camera-sources');
+            const fields = document.getElementById('settings-advanced-camera-source-fields');
+            if (!checkbox || !fields) return;
+            fields.style.display = checkbox.checked ? 'flex' : 'none';
+        }
+
+        async function renderDiagnosticsView() {
+            const workspace = document.getElementById('workspace-card');
+            workspace.innerHTML = `
+                <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1.5rem;">
+                    <h2 style="font-weight: 600; font-size: 1.25rem;">Pi Diagnostics 🧪</h2>
+                    <button class="btn" style="background-color: var(--color-sync); color: white;" onclick="refreshPiDiagnostics()">Refresh</button>
+                </div>
+                <div style="width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 0.65fr); gap: 1rem; align-items: start;">
+                    <div style="border: 1px solid var(--border-color); border-radius: 8px; background: rgba(15, 23, 42, 0.35); padding: 1rem;">
+                        <div class="card-title">Latest Pi Status</div>
+                        <pre id="diagnostics-output" style="white-space: pre-wrap; overflow: auto; max-height: 520px; color: var(--text-primary); font-size: 0.82rem; line-height: 1.45; margin: 0;">Loading...</pre>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                        <button class="btn" style="justify-content: center; background-color: var(--color-sync); color: white;" onclick="runPiDiagnosticAction('test_camera')">Test Camera Capture</button>
+                        <button class="btn" style="justify-content: center; background-color: var(--color-add); color: white;" onclick="runPiDiagnosticAction('test_video')">Record 1s Test Video</button>
+                        <button class="btn" style="justify-content: center; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="runPiDiagnosticAction('sync')">Sync SD Backlog</button>
+                        <button class="btn" style="justify-content: center; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="runPiDiagnosticAction('benchmark')">Run Pi Benchmark</button>
+                        <button class="btn" style="justify-content: center; background-color: var(--color-not-squirrel); color: white;" onclick="runPiRelayTest()">Pulse Relay 0.2s</button>
+                        <div id="diagnostics-action-status" style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.4;"></div>
+                    </div>
+                </div>
+            `;
+            await refreshPiDiagnostics();
+        }
+
+        async function refreshPiDiagnostics() {
+            const output = document.getElementById('diagnostics-output');
+            if (!output) return;
+            try {
+                const res = await fetch('/api/pi/diagnostics');
+                const data = await res.json();
+                output.textContent = JSON.stringify(data, null, 2);
+            } catch (e) {
+                output.textContent = 'Could not load Pi diagnostics: ' + e;
+            }
+        }
+
+        async function runPiDiagnosticAction(action) {
+            const status = document.getElementById('diagnostics-action-status');
+            if (status) status.textContent = 'Running ' + action + '...';
+            try {
+                const res = await fetch('/api/pi/' + action, { method: 'POST' });
+                const data = await res.json();
+                if (status) status.textContent = JSON.stringify(data, null, 2);
+                await refreshPiDiagnostics();
+            } catch (e) {
+                if (status) status.textContent = 'Failed: ' + e;
+            }
+        }
+
+        async function runPiRelayTest() {
+            if (!confirm('Pulse the solenoid relay for 0.2 seconds?')) return;
+            await runPiDiagnosticAction('test_relay');
+        }
+
         async function fetchSettings() {
             try {
                 const res = await fetch('/api/settings');
@@ -3805,7 +3986,14 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-gemini-key').value = data.settings.gemini_api_key;
                     document.getElementById('settings-rotation').value = data.settings.camera_rotation;
                     document.getElementById('settings-roi').value = data.settings.camera_roi;
+                    document.getElementById('settings-video-rotation').value = data.settings.video_rotation ?? data.settings.camera_rotation ?? 0;
                     document.getElementById('settings-video-roi').value = data.settings.video_roi || '';
+                    document.getElementById('settings-camera-awb').value = data.settings.camera_awb || 'auto';
+                    document.getElementById('settings-camera-exposure').value = data.settings.camera_exposure || 'normal';
+                    document.getElementById('settings-camera-metering').value = data.settings.camera_metering || 'centre';
+                    document.getElementById('settings-camera-saturation').value = data.settings.camera_saturation ?? 1.0;
+                    document.getElementById('settings-camera-contrast').value = data.settings.camera_contrast ?? 1.0;
+                    document.getElementById('settings-camera-sharpness').value = data.settings.camera_sharpness ?? 1.0;
                     document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
                     document.getElementById('settings-decision-hits').value = data.settings.spray_decision_required_hits ?? 2;
                     document.getElementById('settings-decision-window').value = data.settings.spray_decision_window_seconds ?? 12;
@@ -3825,12 +4013,16 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-join-key').value = data.settings.join_api_key || '';
                     document.getElementById('settings-smtp-server').value = data.settings.email_smtp_server || '';
                     document.getElementById('settings-email-to').value = data.settings.email_to || '';
+                    document.getElementById('settings-pi-inference-enabled').checked = data.settings.pi_inference_enabled === true;
+                    document.getElementById('settings-pi-inference-shadow').checked = data.settings.pi_inference_shadow_mode !== false;
                     
-                    document.getElementById('settings-camera-source').value = data.settings.camera_source || 'snapshot';
+                    document.getElementById('settings-advanced-camera-sources').checked = data.settings.advanced_camera_sources_enabled === true;
+                    document.getElementById('settings-camera-source').value = data.settings.camera_source || 'pi';
                     document.getElementById('settings-snapshot-url').value = data.settings.snapshot_url || 'http://camera.local/snapshot.jpg';
                     document.getElementById('settings-enable-rtsp').checked = data.settings.enable_rtsp !== false;
                     document.getElementById('settings-rtsp-url').value = data.settings.rtsp_stream_url || 'rtsp://pi3:8554/live';
                     document.getElementById('settings-rtsp-motion-interval').value = data.settings.rtsp_motion_interval_minutes || 5;
+                    updateAdvancedCameraSourcesVisibility();
 
                     // Populate active model dropdown
                     const activeModelSelect = document.getElementById('settings-active-model');
@@ -3896,7 +4088,14 @@ HTML_TEMPLATE = """
             const gemini_api_key = document.getElementById('settings-gemini-key').value;
             const camera_rotation = parseInt(document.getElementById('settings-rotation').value);
             const camera_roi = document.getElementById('settings-roi').value;
+            const video_rotation = parseInt(document.getElementById('settings-video-rotation').value);
             const video_roi = document.getElementById('settings-video-roi').value;
+            const camera_awb = document.getElementById('settings-camera-awb').value;
+            const camera_exposure = document.getElementById('settings-camera-exposure').value;
+            const camera_metering = document.getElementById('settings-camera-metering').value;
+            const camera_saturation = parseFloat(document.getElementById('settings-camera-saturation').value);
+            const camera_contrast = parseFloat(document.getElementById('settings-camera-contrast').value);
+            const camera_sharpness = parseFloat(document.getElementById('settings-camera-sharpness').value);
             const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
             const spray_decision_required_hits = parseInt(document.getElementById('settings-decision-hits').value);
             const spray_decision_window_seconds = parseInt(document.getElementById('settings-decision-window').value);
@@ -3916,9 +4115,12 @@ HTML_TEMPLATE = """
             const join_api_key = document.getElementById('settings-join-key').value;
             const email_smtp_server = document.getElementById('settings-smtp-server').value;
             const email_to = document.getElementById('settings-email-to').value;
+            const pi_inference_enabled = document.getElementById('settings-pi-inference-enabled').checked;
+            const pi_inference_shadow_mode = document.getElementById('settings-pi-inference-shadow').checked;
             const active_model = document.getElementById('settings-active-model') ? document.getElementById('settings-active-model').value : '';
             
-            const camera_source = document.getElementById('settings-camera-source').value;
+            const advanced_camera_sources_enabled = document.getElementById('settings-advanced-camera-sources').checked;
+            const camera_source = advanced_camera_sources_enabled ? document.getElementById('settings-camera-source').value : 'pi';
             const snapshot_url = document.getElementById('settings-snapshot-url').value;
             const enable_rtsp = document.getElementById('settings-enable-rtsp').checked;
             const rtsp_stream_url = document.getElementById('settings-rtsp-url').value;
@@ -3949,7 +4151,14 @@ HTML_TEMPLATE = """
                         gemini_api_key,
                         camera_rotation,
                         camera_roi,
+                        video_rotation,
                         video_roi,
+                        camera_awb,
+                        camera_exposure,
+                        camera_metering,
+                        camera_saturation,
+                        camera_contrast,
+                        camera_sharpness,
                         confidence_threshold,
                         spray_decision_required_hits,
                         spray_decision_window_seconds,
@@ -3969,7 +4178,10 @@ HTML_TEMPLATE = """
                         join_api_key,
                         email_smtp_server,
                         email_to,
+                        pi_inference_enabled,
+                        pi_inference_shadow_mode,
                         active_model,
+                        advanced_camera_sources_enabled,
                         camera_source,
                         snapshot_url,
                         enable_rtsp,
@@ -4288,6 +4500,10 @@ HTML_TEMPLATE = """
             }
             if (viewMode === 'train') {
                 renderTrainView();
+                return;
+            }
+            if (viewMode === 'diagnostics') {
+                renderDiagnosticsView();
                 return;
             }
             if (viewMode === 'queue') {
@@ -6445,7 +6661,17 @@ def api_health():
             'camera_roi': settings.get('camera_roi'),
             'video_roi': settings.get('video_roi'),
             'camera_rotation': settings.get('camera_rotation'),
+            'video_rotation': settings.get('video_rotation'),
+            'camera_awb': settings.get('camera_awb'),
+            'camera_exposure': settings.get('camera_exposure'),
+            'camera_metering': settings.get('camera_metering'),
+            'camera_saturation': settings.get('camera_saturation'),
+            'camera_contrast': settings.get('camera_contrast'),
+            'camera_sharpness': settings.get('camera_sharpness'),
             'camera_source': settings.get('camera_source'),
+            'advanced_camera_sources_enabled': settings.get('advanced_camera_sources_enabled'),
+            'pi_inference_enabled': settings.get('pi_inference_enabled'),
+            'pi_inference_shadow_mode': settings.get('pi_inference_shadow_mode'),
             'snapshot_url': settings.get('snapshot_url'),
             'confidence_threshold': settings.get('confidence_threshold'),
             'spray_decision_required_hits': settings.get('spray_decision_required_hits'),
@@ -6466,6 +6692,57 @@ def api_health_history():
         'status': 'success',
         'samples': samples
     })
+
+def proxy_pi_request(path, method='GET', timeout=20):
+    import urllib.request
+    import json as jsonlib
+    url = 'http://{0}:8080{1}'.format(PI_IP, path)
+    req = urllib.request.Request(url, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        payload = response.read().decode('utf-8').strip()
+        try:
+            return jsonlib.loads(payload)
+        except Exception:
+            start = payload.find('{')
+            end = payload.rfind('}')
+            if start >= 0 and end > start:
+                try:
+                    return jsonlib.loads(payload[start:end + 1])
+                except Exception:
+                    pass
+            return {'status': 'success', 'raw': payload}
+
+@app.route('/api/pi/diagnostics')
+def api_pi_diagnostics():
+    try:
+        diagnostics = proxy_pi_request('/diagnostics', method='GET', timeout=5)
+        with telemetry_lock:
+            pi_copy = dict(latest_pi_status)
+        return jsonify({
+            'status': 'success',
+            'last_reported_status': pi_copy,
+            'live_diagnostics': diagnostics
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 502
+
+@app.route('/api/pi/<action>', methods=['POST'])
+def api_pi_action(action):
+    action_map = {
+        'sync': ('/sync', 5),
+        'test_camera': ('/test_camera', 30),
+        'test_video': ('/test_video?duration=1', 45),
+        'test_relay': ('/test_relay?confirm=true&duration=0.2', 10),
+        'benchmark': ('/benchmark?iterations=3', 120)
+    }
+    if action not in action_map:
+        return jsonify({'status': 'error', 'message': 'Unknown Pi action'}), 404
+    path, timeout = action_map[action]
+    try:
+        result = proxy_pi_request(path, method='POST', timeout=timeout)
+        return jsonify({'status': 'success', 'action': action, 'result': result})
+    except Exception as e:
+        return jsonify({'status': 'error', 'action': action, 'message': str(e)}), 502
 
 @app.route('/api/toggle_automation', methods=['POST'])
 def toggle_automation():
@@ -6612,16 +6889,18 @@ def upload_video():
     
     try:
         if lower_filename.endswith('.mp4'):
-            os.makedirs(VIDEOS_DIR, exist_ok=True)
-            filepath = os.path.join(VIDEOS_DIR, filename)
+            target_dir = os.path.join(VIDEOS_DIR, 'test') if lower_filename.startswith('vid_test_') else VIDEOS_DIR
+            os.makedirs(target_dir, exist_ok=True)
+            filepath = os.path.join(target_dir, filename)
             temp_path = filepath + '.tmp'
             with open(temp_path, 'wb') as f:
                 f.write(request.data)
             os.replace(temp_path, filepath)
             log_message("[Video Upload] Received MP4 video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
-            thumb_path = os.path.join(VIDEOS_DIR, os.path.splitext(filename)[0] + '.jpg')
+            thumb_path = os.path.join(target_dir, os.path.splitext(filename)[0] + '.jpg')
             generate_video_thumbnail(filepath, thumb_path)
-            process_synced_videos_async()
+            if target_dir == VIDEOS_DIR:
+                process_synced_videos_async()
         else:
             filepath = os.path.join(RAW_DIR, filename)
             with open(filepath, 'wb') as f:
@@ -6905,7 +7184,7 @@ def trigger_spray_on_pi(duration):
     import urllib.parse
     try:
         settings = load_settings()
-        rotation = settings.get('camera_rotation', 0)
+        rotation = settings.get('video_rotation', settings.get('camera_rotation', 0))
         roi = settings.get('video_roi', '')
         encoded_roi = urllib.parse.quote(roi) if roi else ''
         url = 'http://{}:8080/spray?duration={}&rotation={}&roi={}'.format(PI_IP, duration, rotation, encoded_roi)
