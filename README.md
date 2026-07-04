@@ -2,13 +2,13 @@
 
 The **Squirrel Soaker 9001** is an automated, AI-powered garden protection system that detects squirrels at a birdfeeder and gently repels them with a short blast from a water solenoid valve.
 
-The current `main` branch uses a Wyze/IP-camera snapshot feed for images:
+The current `main` branch uses a Raspberry Pi 5 with Camera Module 3 for images and solenoid control:
 
-1. **Wyze Cam v3 through docker-wyze-bridge**. The bridge exposes a local JPEG snapshot at `http://localhost:5050/snapshot/v3.jpg` on the Mac host, and at `http://wyze-bridge:5000/snapshot/v3.jpg` from inside Docker.
-2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It pulls snapshots on the analysis interval, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
-3. **ESP32 ESPHome solenoid controller** for water control. The legacy Pi camera/capture implementation is preserved on the `pi-camera-legacy` branch.
+1. **Raspberry Pi 5 with Camera Module 3**. The Pi captures still frames with `rpicam-still`, keeps normal frames in memory, sends them to the Mac app for inference, records spray videos with `rpicam-vid`, and controls the solenoid/button GPIO.
+2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It receives Pi frames, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
+3. **Optional Wyze/IP-camera snapshot feed** remains available through Settings for camera-only experiments.
 
-The current capture path uses HTTP JPEG snapshots because still frames are cleaner for classification than RTSP video frames.
+The current capture path uses Pi still images because they are cleaner for classification than RTSP video frames and avoid depending on the dead Pi 3 or ESP32.
 
 ---
 
@@ -18,21 +18,20 @@ The current capture path uses HTTP JPEG snapshots because still frames are clean
 sequenceDiagram
     autonumber
     loop Configurable analysis interval
-        Mac/Docker Server->>Wyze Bridge: GET /snapshot/v3.jpg
-        Wyze Bridge-->>Mac/Docker Server: JPEG snapshot
+        Raspberry Pi->>Mac/Docker Server: POST /api/predict with JPEG frame
         Mac/Docker Server->>Mac/Docker Server: Normalize frame, update live snapshot, run PyTorch inference
         opt Save interval elapsed
             Mac/Docker Server->>Mac/Docker Server: Save review image on server storage
         end
         alt Repeated squirrel detections pass spray gate
-            Mac/Docker Server->>Solenoid Controller: Trigger spray command
+            Raspberry Pi->>Raspberry Pi: Trigger local solenoid and record video
         end
     end
 ```
 
 Normal camera operation keeps media on the Mac/server:
 
-- Still images are fetched from the configured snapshot URL.
+- Still images are captured on the Pi and posted to the Mac app.
 - Unsaved analysis frames are kept in memory only and dropped after inference.
 - Review frames are saved on the Mac, not the Pi.
 - Spray/detection history is stored as durable blast events; videos are media attachments, so deleting video files does not remove false-positive or accuracy history.
@@ -41,8 +40,8 @@ Normal camera operation keeps media on the Mac/server:
 
 ## Hardware Requirements
 
-1. Wyze Cam v3 or another IP camera with a local JPEG snapshot URL.
-2. Docker Desktop on the Mac/server, running `squirrel-soaker` and `wyze-bridge`.
+1. Raspberry Pi 5 with Camera Module 3.
+2. Docker Desktop on the Mac/server, running `squirrel-soaker`.
 3. 12V normally closed solenoid valve.
 4. Relay/transistor controller for the 12V solenoid. The previous Pi GPIO controller still works from the `pi-camera-legacy` branch.
 5. Momentary push button wired to the controller for manual sprays.
@@ -98,17 +97,19 @@ The included `docker-compose.yml` maps:
 - `5050:5000`, `8554:8554`, and `8888:8888` for docker-wyze-bridge.
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for persistent model weights.
-- `SNAPSHOT_URL=http://wyze-bridge:5000/snapshot/v3.jpg` so the app can fetch Wyze snapshots from inside Docker.
-- `SPRAY_CONTROLLER_URL=http://192.168.86.136` so the app can trigger the ESPHome controller. The controller also advertises as `squirrel-soaker-controller.local`, but the numeric LAN IP is more reliable from inside Docker on macOS.
+- `PI_IP=192.168.86.107` so manual web sprays can call the Pi 5 trigger server.
+- `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling the Wyze snapshot bridge.
+- `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.
+- `SNAPSHOT_URL=http://wyze-bridge:5000/snapshot/v3.jpg` remains available if Camera Source is switched back to `snapshot`.
 - `PUBLIC_BASE_URL=http://192.168.86.137` so notification links use the LAN address instead of Docker's internal bridge IP.
 
 The Wyze bridge token cache is stored in the Docker volume `squirrel-soaker-codex_wyze-bridge-tokens`.
 
 ---
 
-## ESP32 Solenoid Controller
+## Optional ESP32 Solenoid Controller
 
-The current solenoid path uses an ESP-WROOM-32 board running ESPHome. The firmware config is in `esphome/squirrel-soaker-controller.yaml`.
+The previous ESP-WROOM-32 ESPHome controller is preserved in `esphome/squirrel-soaker-controller.yaml`, but it is not used by the current Pi 5 deployment.
 
 Default wiring:
 
@@ -130,7 +131,7 @@ Flash over USB:
 esphome run esphome/squirrel-soaker-controller.yaml --device /dev/cu.usbserial-0001
 ```
 
-Once online, the app triggers sprays through the ESPHome local web API. The first flashed controller came up at `192.168.86.136`:
+If you switch Settings back to ESPHome, the app triggers sprays through the ESPHome local web API:
 
 ```text
 POST http://192.168.86.136/number/spray_duration/set?value=3.0
@@ -141,9 +142,9 @@ The same controller can also be managed from the ESPHome native API if you later
 
 ---
 
-## Legacy Raspberry Pi Setup
+## Raspberry Pi 5 Setup
 
-The old Pi camera/capture path is preserved on the `pi-camera-legacy` branch. The repo still includes Pi-side scripts and services:
+The Pi-side scripts and services are:
 
 - `capture.py`: still capture, motion prefilter, inference upload, Pi status reporting.
 - `trigger_server.py`: local solenoid HTTP endpoint, spray video recording, backlog sync.
@@ -151,11 +152,11 @@ The old Pi camera/capture path is preserved on the `pi-camera-legacy` branch. Th
 - `squirrel-trigger.service`: runs the local trigger server.
 - `deploy_pi.sh`: copies Pi scripts/services and restarts the services.
 
-On a freshly flashed Raspberry Pi OS install, install the small Python dependency used for motion scoring:
+On a freshly flashed Raspberry Pi OS install, install the small Python dependency used for motion scoring. Current Raspberry Pi OS on Pi 5 should already include `rpicam-apps`, `gpiozero`, and `lgpio`; install them if missing:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-pil
+sudo apt-get install -y python3-pil python3-gpiozero python3-lgpio rpicam-apps
 ```
 
 Current Raspberry Pi OS uses `rpicam-still` and `rpicam-vid`. The Pi scripts auto-detect those tools first, then fall back to `libcamera-*` or legacy `raspistill`/`raspivid` if present.
@@ -178,19 +179,19 @@ From the Mac workspace:
 ./deploy_pi.sh
 ```
 
-The deploy script copies the Pi files to `pi@192.168.86.136:/home/pi/squirrel_soaker` by default, installs the systemd services, enables capture and trigger services, disables the old stream service, and restarts everything.
+The deploy script copies the Pi files to the `pi5` SSH host at `/home/nolan/squirrel_soaker` by default, installs the systemd services, enables capture and trigger services, disables the old stream service, and restarts everything.
 
 Override the target if needed:
 
 ```bash
-PI_HOST=pi@<pi-ip> ./deploy_pi.sh
+PI_HOST=<ssh-host> PI_APP_DIR=/home/<user>/squirrel_soaker ./deploy_pi.sh
 ```
 
 ### Monitor Pi Logs
 
 ```bash
-ssh pi@192.168.86.136 'sudo journalctl -u squirrel-capture.service -f'
-ssh pi@192.168.86.136 'sudo journalctl -u squirrel-trigger.service -f'
+ssh pi5 'sudo journalctl -u squirrel-capture.service -f'
+ssh pi5 'sudo journalctl -u squirrel-trigger.service -f'
 ```
 
 Useful signs in the capture log:
@@ -228,7 +229,7 @@ Important settings:
 - **Camera Rotation**: legacy Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
-- **Spray Controller**: choose ESPHome or the legacy Raspberry Pi controller and set the ESPHome controller URL.
+- **Spray Controller**: use `Raspberry Pi` for the Pi 5 deployment. ESPHome remains available only if the ESP32 is put back in service.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
 Camera calibration lives in the Settings view. For snapshot cameras, the latest captured output is the important preview; the ROI map is mainly for the legacy Pi crop path.

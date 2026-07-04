@@ -306,7 +306,7 @@ def load_env_file():
 load_env_file()
 
 # --- Configuration ---
-PI_IP = os.environ.get('PI_IP', '192.168.86.136')
+PI_IP = os.environ.get('PI_IP', '192.168.86.107')
 PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'http://192.168.86.137')
 DEFAULT_STREAM_URL = os.environ.get('STREAM_URL', 'http://{0}:8554/stream.mjpg'.format(PI_IP))
 DEFAULT_SNAPSHOT_URL = os.environ.get('SNAPSHOT_URL', 'http://localhost:5050/snapshot/v3.jpg')
@@ -359,7 +359,7 @@ default_settings = {
     'spray_duration': 3.0,
     'long_spray_duration': 5.0,
     'long_spray_threshold_hours': 2.0,
-    'spray_controller_type': 'esphome',
+    'spray_controller_type': os.environ.get('SPRAY_CONTROLLER_TYPE', 'pi'),
     'spray_controller_url': os.environ.get('SPRAY_CONTROLLER_URL', 'http://squirrel-soaker-controller.local'),
     'retention_days_raw': 3,
     'retention_days_not_squirrel': 7,
@@ -367,7 +367,7 @@ default_settings = {
     'retention_days_trash': 1,
     'retention_days_videos': 14,
     'active_model': 'yolov8n-oiv7.pt',
-    'camera_source': 'snapshot',
+    'camera_source': os.environ.get('CAMERA_SOURCE', 'pi'),
     'snapshot_url': DEFAULT_SNAPSHOT_URL,
     'enable_rtsp': False,
     'rtsp_stream_url': DEFAULT_STREAM_URL,
@@ -3494,8 +3494,8 @@ HTML_TEMPLATE = """
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Controller Type</label>
                             <select id="settings-spray-controller-type" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
+                                <option value="pi">Raspberry Pi</option>
                                 <option value="esphome">ESPHome Web API</option>
-                                <option value="pi">Legacy Raspberry Pi</option>
                             </select>
                         </div>
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
@@ -3785,7 +3785,7 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-decision-average').value = data.settings.spray_decision_average_confidence ?? 0.75;
                     document.getElementById('settings-cooldown').value = data.settings.spray_cooldown_seconds || 60;
                     document.getElementById('settings-spray-duration').value = data.settings.spray_duration || 3.0;
-                    document.getElementById('settings-spray-controller-type').value = data.settings.spray_controller_type || 'esphome';
+                    document.getElementById('settings-spray-controller-type').value = data.settings.spray_controller_type || 'pi';
                     document.getElementById('settings-spray-controller-url').value = data.settings.spray_controller_url || 'http://squirrel-soaker-controller.local';
                     document.getElementById('settings-long-duration').value = data.settings.long_spray_duration || 5.0;
                     document.getElementById('settings-threshold').value = data.settings.long_spray_threshold_hours || 2.0;
@@ -6908,7 +6908,7 @@ def trigger_spray_on_esphome(duration):
 
 def trigger_spray_controller(duration):
     settings = load_settings()
-    controller_type = str(settings.get('spray_controller_type') or 'esphome').strip().lower()
+    controller_type = str(settings.get('spray_controller_type') or 'pi').strip().lower()
     if controller_type == 'pi':
         return trigger_spray_on_pi(duration)
     return trigger_spray_on_esphome(duration)

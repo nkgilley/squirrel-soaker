@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # trigger_server.py
-# HTTP server running on the Raspberry Pi 3 to trigger the solenoid and sync backlog files.
-# Compatible with Python 3.4.2+.
+# HTTP server running on the Raspberry Pi to trigger the solenoid and sync backlog files.
 
 import os
 import sys
@@ -13,11 +12,22 @@ import shutil
 import fcntl
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+GPIO_BACKEND = None
+GPIO = None
+solenoid_device = None
+button_device = None
+
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import Button, DigitalOutputDevice
+    GPIO_BACKEND = 'gpiozero'
 except ImportError:
-    print("Warning: RPi.GPIO library not found. GPIO triggers will be simulated.")
-    GPIO = None
+    Button = None
+    DigitalOutputDevice = None
+    try:
+        import RPi.GPIO as GPIO
+        GPIO_BACKEND = 'rpigpio'
+    except ImportError:
+        print("Warning: no GPIO library found. GPIO triggers will be simulated.")
 
 PORT = 8080
 SOLENOID_PIN = 17
@@ -324,10 +334,12 @@ def trigger_spray(duration=None, rotation=None, roi=None, source='http'):
             print("[Video] Giving camera {0:.1f}s head start before solenoid.".format(VIDEO_START_LEAD_SECONDS))
             time.sleep(VIDEO_START_LEAD_SECONDS)
 
-        if GPIO:
-            GPIO.output(SOLENOID_PIN, GPIO.HIGH)
-            time.sleep(duration)
-            GPIO.output(SOLENOID_PIN, GPIO.LOW)
+        if gpio_available():
+            try:
+                set_solenoid(True)
+                time.sleep(duration)
+            finally:
+                set_solenoid(False)
         else:
             time.sleep(duration)
             print("(Simulation) Solenoid activated and deactivated.")
@@ -344,11 +356,10 @@ def button_pressed():
     thread.start()
 
 def button_monitor():
-    if not GPIO:
+    if not gpio_available():
         return
 
-    active_value = GPIO.LOW if BUTTON_ACTIVE_LOW else GPIO.HIGH
-    last_pressed = (GPIO.input(BUTTON_PIN) == active_value)
+    last_pressed = is_button_pressed()
     last_triggered = 0.0
 
     if last_pressed:
@@ -356,7 +367,7 @@ def button_monitor():
 
     while True:
         try:
-            pressed = (GPIO.input(BUTTON_PIN) == active_value)
+            pressed = is_button_pressed()
             now = time.time()
             if pressed and not last_pressed and now - last_triggered >= BUTTON_BOUNCE_SECONDS:
                 last_triggered = now
@@ -366,6 +377,55 @@ def button_monitor():
         except Exception as e:
             print("[Button] Error reading GPIO {0}: {1}".format(BUTTON_PIN, e))
             time.sleep(1.0)
+
+def gpio_available():
+    return GPIO_BACKEND in ('gpiozero', 'rpigpio')
+
+def setup_gpio():
+    global solenoid_device, button_device
+
+    if GPIO_BACKEND == 'gpiozero':
+        solenoid_device = DigitalOutputDevice(SOLENOID_PIN, active_high=True, initial_value=False)
+        button_device = Button(BUTTON_PIN, pull_up=BUTTON_ACTIVE_LOW, bounce_time=BUTTON_BOUNCE_SECONDS)
+        return True
+
+    if GPIO_BACKEND == 'rpigpio':
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(SOLENOID_PIN, GPIO.OUT)
+        GPIO.output(SOLENOID_PIN, GPIO.LOW)
+        pull_mode = GPIO.PUD_UP if BUTTON_ACTIVE_LOW else GPIO.PUD_DOWN
+        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=pull_mode)
+        return True
+
+    return False
+
+def set_solenoid(active):
+    if GPIO_BACKEND == 'gpiozero' and solenoid_device:
+        if active:
+            solenoid_device.on()
+        else:
+            solenoid_device.off()
+    elif GPIO_BACKEND == 'rpigpio' and GPIO:
+        GPIO.output(SOLENOID_PIN, GPIO.HIGH if active else GPIO.LOW)
+
+def is_button_pressed():
+    if GPIO_BACKEND == 'gpiozero' and button_device:
+        return bool(button_device.is_pressed)
+    if GPIO_BACKEND == 'rpigpio' and GPIO:
+        active_value = GPIO.LOW if BUTTON_ACTIVE_LOW else GPIO.HIGH
+        return GPIO.input(BUTTON_PIN) == active_value
+    return False
+
+def cleanup_gpio():
+    if GPIO_BACKEND == 'gpiozero':
+        if solenoid_device:
+            solenoid_device.off()
+            solenoid_device.close()
+        if button_device:
+            button_device.close()
+    elif GPIO_BACKEND == 'rpigpio' and GPIO:
+        GPIO.cleanup()
 
 class TriggerHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -417,21 +477,17 @@ class TriggerHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 def run():
-    if GPIO:
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(SOLENOID_PIN, GPIO.OUT)
-        GPIO.output(SOLENOID_PIN, GPIO.LOW)
-        pull_mode = GPIO.PUD_UP if BUTTON_ACTIVE_LOW else GPIO.PUD_DOWN
-        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=pull_mode)
+    if setup_gpio():
         monitor_thread = threading.Thread(target=button_monitor)
         monitor_thread.daemon = True
         monitor_thread.start()
-        print("GPIO initialized successfully.")
+        print("GPIO initialized successfully using {0}.".format(GPIO_BACKEND))
         print("Manual spray button listening on GPIO {0} with internal {1}.".format(
             BUTTON_PIN,
             "pull-up" if BUTTON_ACTIVE_LOW else "pull-down"
         ))
+    else:
+        print("GPIO unavailable; trigger server is running in simulation mode.")
 
     server_address = ('', PORT)
     httpd = HTTPServer(server_address, TriggerHandler)
@@ -441,8 +497,8 @@ def run():
     except KeyboardInterrupt:
         print("\nStopping trigger server.")
     finally:
-        if GPIO:
-            GPIO.cleanup()
+        if gpio_available():
+            cleanup_gpio()
             print("GPIO cleaned up.")
 
 if __name__ == '__main__':

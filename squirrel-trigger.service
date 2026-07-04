@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/squirrel_soaker
-ExecStart=/usr/bin/python3 -u /home/pi/squirrel_soaker/trigger_server.py
+User=nolan
+WorkingDirectory=/home/nolan/squirrel_soaker
+ExecStart=/usr/bin/python3 -u /home/nolan/squirrel_soaker/trigger_server.py
 Restart=always
 RestartSec=5
 

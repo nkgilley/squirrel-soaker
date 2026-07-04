@@ -534,6 +534,7 @@ def capture_image():
         if not motion_allowed:
             print("[Motion] Skipping inference. score={0:.2f}, threshold={1:.2f}".format(motion_score, MOTION_THRESHOLD))
             report_pi_status({
+                'source': 'pi',
                 'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
                 'status': 'motion_skipped',
                 'filename': filename,
@@ -582,6 +583,7 @@ def capture_image():
         else:
             print("[Cleanup] Dropped unsaved transient frame from memory after failed prediction.")
         report_pi_status({
+            'source': 'pi',
             'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
             'status': 'analyzed',
             'filename': filename,

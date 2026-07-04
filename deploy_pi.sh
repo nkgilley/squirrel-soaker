@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-pi@192.168.86.136}"
-PI_APP_DIR="${PI_APP_DIR:-/home/pi/squirrel_soaker}"
+PI_HOST="${PI_HOST:-pi5}"
+PI_APP_DIR="${PI_APP_DIR:-/home/nolan/squirrel_soaker}"
 
 echo "Deploying Raspberry Pi services to ${PI_HOST}:${PI_APP_DIR}"
 
