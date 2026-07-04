@@ -74,7 +74,7 @@ def get_backlog_files():
         return files
     for filename in os.listdir(CAPTURES_DIR):
         lower = filename.lower()
-        if not (lower.endswith('.jpg') or lower.endswith('.jpeg') or lower.endswith('.h264')):
+        if not (lower.endswith('.jpg') or lower.endswith('.jpeg') or lower.endswith('.h264') or lower.endswith('.mp4')):
             continue
         path = os.path.join(CAPTURES_DIR, filename)
         if not os.path.isfile(path):
@@ -140,7 +140,9 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None):
             "--width", "1280",
             "--height", "720",
             "--output", filepath,
-            "--codec", "h264",
+            "--codec", "libav",
+            "--libav-format", "mp4",
+            "--libav-video-codec", "libx264",
             "--nopreview"
         ]
         if rotation in [0, 180]:
@@ -167,7 +169,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
 
     ensure_dir(VIDEO_TMP_DIR)
 
-    filename = "vid_{0}.h264".format(local_time.strftime("%Y%m%d_%H%M%S"))
+    filename = "vid_{0}.mp4".format(local_time.strftime("%Y%m%d_%H%M%S"))
     filepath = os.path.join(VIDEO_TMP_DIR, filename)
 
     cmd = build_video_command(duration_ms, filepath, rotation=rot, roi=selected_roi)
@@ -191,7 +193,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None):
         encoded = urllib.parse.quote(filename)
         url = "http://{0}:5001/api/upload_video?filename={1}".format(MAC_IP, encoded)
         try:
-            post_file(url, filepath, 'video/h264', timeout=30)
+            post_file(url, filepath, 'video/mp4', timeout=30)
             if os.path.exists(filepath):
                 os.remove(filepath)
             print("[Video] Uploaded {0} from RAM and removed local copy.".format(filename))
@@ -286,10 +288,11 @@ def sync_backlog():
                 if lower.endswith('.jpg') or lower.endswith('.jpeg'):
                     url = "http://{0}:5001/api/predict".format(MAC_IP)
                     post_file(url, filepath, 'image/jpeg', timeout=20)
-                elif lower.endswith('.h264'):
+                elif lower.endswith('.h264') or lower.endswith('.mp4'):
                     encoded = urllib.parse.quote(filename)
                     url = "http://{0}:5001/api/upload_video?filename={1}".format(MAC_IP, encoded)
-                    post_file(url, filepath, 'video/h264', timeout=30)
+                    content_type = 'video/mp4' if lower.endswith('.mp4') else 'video/h264'
+                    post_file(url, filepath, content_type, timeout=30)
                 else:
                     continue
 

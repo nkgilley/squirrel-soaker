@@ -1281,6 +1281,35 @@ def get_next_raw_image():
 video_processing_lock = threading.Lock()
 sync_lock = threading.Lock()
 
+def generate_video_thumbnail(mp4_path, thumb_path):
+    ffmpeg_path = shutil.which('ffmpeg')
+    if not ffmpeg_path:
+        return False
+
+    temp_thumb_path = thumb_path + '.tmp.jpg'
+    cmd = [
+        ffmpeg_path,
+        '-y',
+        '-i', mp4_path,
+        '-ss', '00:00:00.5',
+        '-vframes', '1',
+        '-vf', 'format=yuvj420p',
+        '-f', 'image2',
+        temp_thumb_path
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        os.replace(temp_thumb_path, thumb_path)
+        return True
+    except Exception as e:
+        print("Error generating thumbnail for {0}: {1}".format(os.path.basename(mp4_path), e))
+        if os.path.exists(temp_thumb_path):
+            try:
+                os.remove(temp_thumb_path)
+            except Exception:
+                pass
+    return False
+
 def process_synced_videos():
     """Finds all .h264 files in RAW_DIR, converts them to .mp4 in VIDEOS_DIR, generates thumbnails, and deletes source files."""
     with video_processing_lock:
@@ -1310,10 +1339,8 @@ def process_synced_videos():
                     thumb_filename = os.path.splitext(mp4_filename)[0] + '.jpg'
                     thumb_path = os.path.join(VIDEOS_DIR, thumb_filename)
                     temp_thumb_path = thumb_path + '.tmp'
-                    thumb_cmd = [ffmpeg_path, '-y', '-i', mp4_path, '-ss', '00:00:00.5', '-vframes', '1', '-f', 'image2', temp_thumb_path]
-                    subprocess.run(thumb_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    os.rename(temp_thumb_path, thumb_path)
-                    print("Generated thumbnail for {0}".format(mp4_filename))
+                    if generate_video_thumbnail(mp4_path, thumb_path):
+                        print("Generated thumbnail for {0}".format(mp4_filename))
                 except Exception as e:
                     print("Error processing video {0}: {1}".format(filename, str(e)))
                     for path in [temp_mp4_path, temp_thumb_path]:
@@ -1382,9 +1409,9 @@ def process_synced_videos():
             thumb_filename = os.path.splitext(filename)[0] + '.jpg'
             thumb_path = os.path.join(VIDEOS_DIR, thumb_filename)
             if not os.path.exists(thumb_path):
-                thumb_cmd = [ffmpeg_path, '-y', '-i', mp4_path, '-ss', '00:00:00.5', '-vframes', '1', thumb_path]
                 try:
-                    subprocess.run(thumb_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if not generate_video_thumbnail(mp4_path, thumb_path):
+                        continue
                     print("Generated missing thumbnail for {0}".format(filename))
                 except Exception as e:
                     print("Error generating missing thumbnail for {0}: {1}".format(filename, e))
@@ -6578,13 +6605,29 @@ def upload_video():
     filename = request.args.get('filename')
     if not filename:
         return jsonify({'status': 'error', 'message': 'Missing filename'}), 400
+    filename = os.path.basename(filename)
+    lower_filename = filename.lower()
+    if not (lower_filename.endswith('.h264') or lower_filename.endswith('.mp4')):
+        return jsonify({'status': 'error', 'message': 'Unsupported video filename'}), 400
     
-    filepath = os.path.join(RAW_DIR, filename)
     try:
-        with open(filepath, 'wb') as f:
-            f.write(request.data)
-        log_message("[Video Upload] Received raw video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
-        process_synced_videos_async()
+        if lower_filename.endswith('.mp4'):
+            os.makedirs(VIDEOS_DIR, exist_ok=True)
+            filepath = os.path.join(VIDEOS_DIR, filename)
+            temp_path = filepath + '.tmp'
+            with open(temp_path, 'wb') as f:
+                f.write(request.data)
+            os.replace(temp_path, filepath)
+            log_message("[Video Upload] Received MP4 video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
+            thumb_path = os.path.join(VIDEOS_DIR, os.path.splitext(filename)[0] + '.jpg')
+            generate_video_thumbnail(filepath, thumb_path)
+            process_synced_videos_async()
+        else:
+            filepath = os.path.join(RAW_DIR, filename)
+            with open(filepath, 'wb') as f:
+                f.write(request.data)
+            log_message("[Video Upload] Received raw video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
+            process_synced_videos_async()
         return jsonify({'status': 'success'})
     except Exception as e:
         log_message("Error receiving video {0}: {1}".format(filename, str(e)))
@@ -6941,10 +6984,14 @@ def start_local_video_recording(duration, still_filename):
     import datetime
     
     try:
+        if not still_filename.startswith("img_auto_"):
+            raise ValueError("non-timestamp still label")
         time_part = still_filename.replace("img_auto_", "").split(".")[0]
         parts = time_part.split("_")
         if len(parts) >= 2:
             time_part = parts[0] + "_" + parts[1]
+        else:
+            raise ValueError("missing timestamp")
         vid_filename = "vid_{}.mp4".format(time_part)
     except Exception:
         vid_filename = "vid_{}.mp4".format(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
