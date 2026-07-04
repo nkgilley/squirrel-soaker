@@ -94,16 +94,12 @@ docker compose up -d --build
 The included `docker-compose.yml` maps:
 
 - `5001:5001` for the web app.
-- `5050:5000`, `8554:8554`, and `8888:8888` for docker-wyze-bridge.
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for persistent model weights.
 - `PI_IP=192.168.86.107` so manual web sprays can call the Pi 5 trigger server.
 - `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling the Wyze snapshot bridge.
 - `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.
-- `SNAPSHOT_URL=http://wyze-bridge:5000/snapshot/v3.jpg` remains available if Camera Source is switched back to `snapshot`.
 - `PUBLIC_BASE_URL=http://192.168.86.137` so notification links use the LAN address instead of Docker's internal bridge IP.
-
-The Wyze bridge token cache is stored in the Docker volume `squirrel-soaker-codex_wyze-bridge-tokens`.
 
 ---
 
@@ -218,7 +214,7 @@ Most runtime behavior is managed from the web UI Settings view.
 Important settings:
 
 - **Camera Source**: `snapshot` for Wyze/IP-camera snapshots, `pi` for legacy Pi uploads, or `rtsp` for the old RTSP reader.
-- **Snapshot URL**: default Docker URL is `http://wyze-bridge:5000/snapshot/v3.jpg`.
+- **Snapshot URL**: optional IP-camera/Wyze snapshot URL if Camera Source is switched back to `snapshot`.
 - **Analysis Interval**: how often the app fetches and analyzes a frame. Current default is 5 seconds.
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
 - **Daylight Schedule**: nighttime capture pause can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable.

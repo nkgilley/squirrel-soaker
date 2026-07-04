@@ -3557,8 +3557,8 @@ HTML_TEMPLATE = """
 
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Snapshot URL</label>
-                            <input type="text" id="settings-snapshot-url" placeholder="http://wyze-bridge:5000/snapshot/v3.jpg" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Inside Docker, the Wyze bridge is reachable at http://wyze-bridge:5000/snapshot/v3.jpg.</span>
+                            <input type="text" id="settings-snapshot-url" placeholder="http://camera.local/snapshot.jpg" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Optional HTTP JPEG snapshot URL used only when Camera Source is set to snapshot.</span>
                         </div>
 
                         <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem;">
@@ -3827,7 +3827,7 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-email-to').value = data.settings.email_to || '';
                     
                     document.getElementById('settings-camera-source').value = data.settings.camera_source || 'snapshot';
-                    document.getElementById('settings-snapshot-url').value = data.settings.snapshot_url || 'http://wyze-bridge:5000/snapshot/v3.jpg';
+                    document.getElementById('settings-snapshot-url').value = data.settings.snapshot_url || 'http://camera.local/snapshot.jpg';
                     document.getElementById('settings-enable-rtsp').checked = data.settings.enable_rtsp !== false;
                     document.getElementById('settings-rtsp-url').value = data.settings.rtsp_stream_url || 'rtsp://pi3:8554/live';
                     document.getElementById('settings-rtsp-motion-interval').value = data.settings.rtsp_motion_interval_minutes || 5;
