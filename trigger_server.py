@@ -52,16 +52,34 @@ spray_lock = threading.Lock()
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def get_local_time_and_defaults():
+    local_time = datetime.datetime.now()
+    default_rot = 0
+    default_roi = None
+
     try:
         import capture
         local_time = capture.get_eastern_time()
-        default_rot = getattr(capture, 'ROTATION', 0)
+        default_rot = getattr(capture, 'ROTATION', default_rot)
         default_roi = getattr(capture, 'VIDEO_ROI', getattr(capture, 'ROI', None))
     except Exception as e:
         print("[Video] Warning: could not import capture config: {0}".format(e))
-        local_time = datetime.datetime.now()
-        default_rot = 0
-        default_roi = None
+
+    try:
+        import json
+        import urllib.request
+        url = "http://{0}:5001/api/settings".format(MAC_IP)
+        req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode('utf-8'))
+        if data.get('status') == 'success':
+            settings = data.get('settings', {})
+            if 'camera_rotation' in settings:
+                default_rot = int(settings['camera_rotation'])
+            if 'video_roi' in settings:
+                default_roi = str(settings['video_roi']).strip()
+    except Exception as e:
+        print("[Video] Warning: could not fetch video settings from Mac: {0}".format(e))
+
     return local_time, default_rot, default_roi
 
 def ensure_dir(path):
