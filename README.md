@@ -220,6 +220,8 @@ Important settings:
 - **Snapshot URL**: optional IP-camera/Wyze snapshot URL if Camera Source is switched back to `snapshot`.
 - **Analysis Interval**: how often the app fetches and analyzes a frame. Current default is 5 seconds.
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
+- **Live vs Review Size**: live analysis frames stay smaller for speed, while saved review/classification frames can use a higher Camera Module 3 resolution. The Pi 5 default is 2304x1296 review frames.
+- **Sensor Mode**: default `2304:1296:10:P`, forcing live and review captures through the same Camera Module 3 sensor mode so ROI/crop stays aligned across 5-second live frames and 30-second review frames.
 - **Camera/Video Rotation**: still and video rotation are separate settings because Pi camera still and video paths can need different orientation values.
 - **Camera Module 3 Tuning**: AWB, exposure, metering, saturation, contrast, and sharpness are configurable. Defaults are neutral for a normal Camera Module 3.
 - **Daylight Schedule**: nighttime capture pause can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable.

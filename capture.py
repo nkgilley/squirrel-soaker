@@ -28,10 +28,13 @@ VIDEO_ROI = "0.0,0.0,0.6,0.6"
 VIDEO_ROTATION = 180
 WIDTH = 1280
 HEIGHT = 960
-ANALYSIS_WIDTH = 960
+ANALYSIS_WIDTH = 1280
 ANALYSIS_HEIGHT = 720
+REVIEW_WIDTH = 2304
+REVIEW_HEIGHT = 1296
+CAMERA_SENSOR_MODE = "2304:1296:10:P"
 ANALYSIS_JPEG_QUALITY = 65
-REVIEW_JPEG_QUALITY = 90
+REVIEW_JPEG_QUALITY = 95
 CAMERA_AWB = "auto"
 CAMERA_EXPOSURE = "normal"
 CAMERA_METERING = "centre"
@@ -183,9 +186,9 @@ def get_next_daylight_start(dt):
 
 def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, VIDEO_ROTATION, CONFIDENCE_THRESHOLD
-    global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
+    global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, REVIEW_WIDTH, REVIEW_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     global CAMERA_AWB, CAMERA_EXPOSURE, CAMERA_METERING, CAMERA_SATURATION, CAMERA_CONTRAST, CAMERA_SHARPNESS
-    global CAMERA_TUNING_ENABLED
+    global CAMERA_TUNING_ENABLED, CAMERA_SENSOR_MODE
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
     global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
     global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
@@ -238,6 +241,12 @@ def fetch_config_from_mac():
                     ANALYSIS_WIDTH = int(settings['analysis_width'])
                 if 'analysis_height' in settings:
                     ANALYSIS_HEIGHT = int(settings['analysis_height'])
+                if 'review_width' in settings:
+                    REVIEW_WIDTH = int(settings['review_width'])
+                if 'review_height' in settings:
+                    REVIEW_HEIGHT = int(settings['review_height'])
+                if 'camera_sensor_mode' in settings:
+                    CAMERA_SENSOR_MODE = str(settings['camera_sensor_mode']).strip()
                 if 'analysis_jpeg_quality' in settings:
                     ANALYSIS_JPEG_QUALITY = int(settings['analysis_jpeg_quality'])
                 if 'review_jpeg_quality' in settings:
@@ -271,7 +280,7 @@ def fetch_config_from_mac():
                 print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoRotation={13}, VideoROI={14}, Threshold={15:.2f}, Daylight={16} {17}-{18}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
-                    WIDTH, HEIGHT, REVIEW_JPEG_QUALITY,
+                    REVIEW_WIDTH, REVIEW_HEIGHT, REVIEW_JPEG_QUALITY,
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
                     ROTATION, ROI, VIDEO_ROTATION, VIDEO_ROI, CONFIDENCE_THRESHOLD,
                     daylight_source,
@@ -562,6 +571,8 @@ def build_still_command(width, height, jpeg_quality):
             print("[Camera] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, ROTATION))
         if ROI:
             cmd.extend(["--roi", ROI])
+        if CAMERA_SENSOR_MODE:
+            cmd.extend(["--mode", CAMERA_SENSOR_MODE])
         append_rpicam_tuning(cmd)
         return cmd
 
@@ -643,8 +654,8 @@ def capture_image():
     should_save = (last_review_save_time <= 0.0) or (now_seconds - last_review_save_time >= SAVE_INTERVAL_SECONDS)
     filename = "img_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S"))
 
-    capture_width = WIDTH if should_save else ANALYSIS_WIDTH
-    capture_height = HEIGHT if should_save else ANALYSIS_HEIGHT
+    capture_width = REVIEW_WIDTH if should_save else ANALYSIS_WIDTH
+    capture_height = REVIEW_HEIGHT if should_save else ANALYSIS_HEIGHT
     jpeg_quality = REVIEW_JPEG_QUALITY if should_save else ANALYSIS_JPEG_QUALITY
 
     cmd = build_still_command(capture_width, capture_height, jpeg_quality)

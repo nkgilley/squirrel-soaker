@@ -335,10 +335,13 @@ default_settings = {
     'sunset_offset_minutes': 0,
     'daylight_start_hour': 6,
     'daylight_end_hour': 20,
-    'analysis_width': 960,
+    'analysis_width': 1280,
     'analysis_height': 720,
+    'review_width': 2304,
+    'review_height': 1296,
+    'camera_sensor_mode': '2304:1296:10:P',
     'analysis_jpeg_quality': 65,
-    'review_jpeg_quality': 90,
+    'review_jpeg_quality': 95,
     'motion_prefilter_enabled': True,
     'motion_threshold': 6.0,
     'motion_force_interval': 30,
@@ -3454,6 +3457,18 @@ HTML_TEMPLATE = """
                                 <input type="number" id="settings-analysis-height" min="240" max="1440" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review Width</label>
+                                <input type="number" id="settings-review-width" min="640" max="4608" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review Height</label>
+                                <input type="number" id="settings-review-height" min="480" max="2592" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sensor Mode</label>
+                                <input type="text" id="settings-camera-sensor-mode" placeholder="2304:1296:10:P" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                                 <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live JPEG Quality</label>
                                 <input type="number" id="settings-analysis-quality" min="30" max="95" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
                             </div>
@@ -3981,10 +3996,13 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-sunset-offset').value = data.settings.sunset_offset_minutes ?? 0;
                     document.getElementById('settings-daylight-start-hour').value = data.settings.daylight_start_hour ?? 6;
                     document.getElementById('settings-daylight-end-hour').value = data.settings.daylight_end_hour ?? 20;
-                    document.getElementById('settings-analysis-width').value = data.settings.analysis_width || 960;
+                    document.getElementById('settings-analysis-width').value = data.settings.analysis_width || 1280;
                     document.getElementById('settings-analysis-height').value = data.settings.analysis_height || 720;
+                    document.getElementById('settings-review-width').value = data.settings.review_width || 2304;
+                    document.getElementById('settings-review-height').value = data.settings.review_height || 1296;
+                    document.getElementById('settings-camera-sensor-mode').value = data.settings.camera_sensor_mode || '2304:1296:10:P';
                     document.getElementById('settings-analysis-quality').value = data.settings.analysis_jpeg_quality || 65;
-                    document.getElementById('settings-review-quality').value = data.settings.review_jpeg_quality || 90;
+                    document.getElementById('settings-review-quality').value = data.settings.review_jpeg_quality || 95;
                     document.getElementById('settings-motion-enabled').checked = data.settings.motion_prefilter_enabled !== false;
                     document.getElementById('settings-motion-threshold').value = data.settings.motion_threshold || 6.0;
                     document.getElementById('settings-motion-force').value = data.settings.motion_force_interval || 30;
@@ -4086,6 +4104,9 @@ HTML_TEMPLATE = """
             const daylight_end_hour = parseInt(document.getElementById('settings-daylight-end-hour').value);
             const analysis_width = parseInt(document.getElementById('settings-analysis-width').value);
             const analysis_height = parseInt(document.getElementById('settings-analysis-height').value);
+            const review_width = parseInt(document.getElementById('settings-review-width').value);
+            const review_height = parseInt(document.getElementById('settings-review-height').value);
+            const camera_sensor_mode = document.getElementById('settings-camera-sensor-mode').value;
             const analysis_jpeg_quality = parseInt(document.getElementById('settings-analysis-quality').value);
             const review_jpeg_quality = parseInt(document.getElementById('settings-review-quality').value);
             const motion_prefilter_enabled = document.getElementById('settings-motion-enabled').checked;
@@ -4150,6 +4171,9 @@ HTML_TEMPLATE = """
                         daylight_end_hour,
                         analysis_width,
                         analysis_height,
+                        review_width,
+                        review_height,
+                        camera_sensor_mode,
                         analysis_jpeg_quality,
                         review_jpeg_quality,
                         motion_prefilter_enabled,
@@ -6654,6 +6678,9 @@ def api_health():
             'save_interval': settings.get('save_interval'),
             'analysis_width': settings.get('analysis_width'),
             'analysis_height': settings.get('analysis_height'),
+            'review_width': settings.get('review_width'),
+            'review_height': settings.get('review_height'),
+            'camera_sensor_mode': settings.get('camera_sensor_mode'),
             'analysis_jpeg_quality': settings.get('analysis_jpeg_quality'),
             'review_jpeg_quality': settings.get('review_jpeg_quality'),
             'motion_prefilter_enabled': settings.get('motion_prefilter_enabled'),
