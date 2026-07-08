@@ -2717,6 +2717,8 @@ HTML_TEMPLATE = """
         let totalPages = 1;
         let galleryTotalCount = 0;
         let modalIndex = 0; // Index of the currently open image in the galleryImages array
+        let reviewSessionMode = null;
+        let reviewSessionHiddenImages = new Set();
         let videoClassifications = {};
         let videoFavorites = {};
         let showFavoritesOnly = false;
@@ -2736,7 +2738,26 @@ HTML_TEMPLATE = """
             // Reset to page 1 on sorting change
             currentPage = 1;
             videoCurrentPage = 1;
+            resetReviewSession();
             loadNext();
+        }
+
+        function resetReviewSession() {
+            reviewSessionMode = null;
+            reviewSessionHiddenImages = new Set();
+        }
+
+        function ensureReviewSession() {
+            if (reviewSessionMode !== viewMode) {
+                reviewSessionMode = viewMode;
+                reviewSessionHiddenImages = new Set();
+            }
+        }
+
+        function reviewedCategoryForMode() {
+            if (viewMode === 'squirrel') return 'squirrel';
+            if (viewMode === 'not_squirrel') return 'not_squirrel';
+            return null;
         }
 
         async function setPage(page) {
@@ -2791,6 +2812,7 @@ HTML_TEMPLATE = """
             viewMode = mode;
             currentPage = 1; // Reset page
             videoCurrentPage = 1; // Reset video page
+            resetReviewSession();
             if (mode !== 'videos') {
                 showFavoritesOnly = false;
             }
@@ -4921,8 +4943,12 @@ HTML_TEMPLATE = """
                     `;
                 }
             } else if (viewMode === 'squirrel' || viewMode === 'not_squirrel') {
+                ensureReviewSession();
                 // Fetch paginated list
                 let url = `/api/list_images?mode=${viewMode}&page=${currentPage}&reverse=${reverseOrder}&per_page=12`;
+                if (reviewSessionHiddenImages.size > 0) {
+                    url += `&exclude=${encodeURIComponent(Array.from(reviewSessionHiddenImages).join(','))}`;
+                }
                 const res = await fetch(url);
                 const data = await res.json();
 
@@ -5395,6 +5421,11 @@ HTML_TEMPLATE = """
                 });
                 const data = await res.json();
                 updateUndoButtonState(data.has_history);
+
+                const confirmedInCurrentReviewCategory = category === reviewedCategoryForMode();
+                if (confirmedInCurrentReviewCategory) {
+                    reviewSessionHiddenImages.add(img);
+                }
 
                 // Remove item from frontend list
                 galleryImages.splice(modalIndex, 1);
@@ -5955,6 +5986,12 @@ def next_image():
 def list_images():
     mode = request.args.get('mode', 'queue')
     reverse = request.args.get('reverse', 'false') == 'true'
+    exclude_raw = request.args.get('exclude', '')
+    exclude_files = [
+        os.path.basename(name.strip())
+        for name in exclude_raw.split(',')
+        if name.strip() and os.path.basename(name.strip()) == name.strip()
+    ]
     try:
         page = int(request.args.get('page', 1))
     except ValueError:
@@ -5973,6 +6010,8 @@ def list_images():
 
     try:
         query = db_session.query(DBImage).filter_by(category=db_category)
+        if exclude_files:
+            query = query.filter(~DBImage.filename.in_(exclude_files))
         if reverse:
             query = query.order_by(DBImage.filename.desc())
         else:
