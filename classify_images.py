@@ -4206,6 +4206,14 @@ HTML_TEMPLATE = """
                         <button class="btn" style="justify-content: center; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="runPiDiagnosticAction('sync')">Sync SD Backlog</button>
                         <button class="btn" style="justify-content: center; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="runPiDiagnosticAction('benchmark')">Run Pi Benchmark</button>
                         <button class="btn" style="justify-content: center; background-color: var(--color-not-squirrel); color: white;" onclick="runPiRelayTest()">Pulse Relay 0.2s</button>
+                        <div id="pi-diagnostics-test-image-wrap" style="display: none;">
+                            <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.35rem;">Latest test image</div>
+                            <img id="pi-diagnostics-test-image" alt="Pi test camera capture" style="display: block; width: 100%; border-radius: 6px; border: 1px solid var(--border-color); background: #000;">
+                        </div>
+                        <div id="pi-diagnostics-test-video-wrap" style="display: none;">
+                            <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.35rem;">Latest test video</div>
+                            <video id="pi-diagnostics-test-video" controls playsinline style="display: block; width: 100%; border-radius: 6px; border: 1px solid var(--border-color); background: #000;"></video>
+                        </div>
                         <div id="diagnostics-action-status" style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.4;"></div>
                     </div>
                 </div>
@@ -4231,11 +4239,45 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/pi/' + action, { method: 'POST' });
                 const data = await res.json();
-                if (status) status.textContent = JSON.stringify(data, null, 2);
+                renderPiDiagnosticMedia(action, data);
+                if (status) status.textContent = JSON.stringify(piDiagnosticDisplayData(data), null, 2);
                 await refreshPiDiagnostics();
             } catch (e) {
                 if (status) status.textContent = 'Failed: ' + e;
             }
+        }
+
+        function piDiagnosticDisplayData(data) {
+            const copy = JSON.parse(JSON.stringify(data || {}));
+            const result = unwrapPiDiagnosticResult(copy);
+            if (result && result.image_base64) {
+                result.image_base64 = '[rendered above]';
+            }
+            return copy;
+        }
+
+        function renderPiDiagnosticMedia(action, data) {
+            const result = unwrapPiDiagnosticResult(data);
+            if (action === 'test_camera' && result.image_base64) {
+                const wrap = document.getElementById('pi-diagnostics-test-image-wrap');
+                const img = document.getElementById('pi-diagnostics-test-image');
+                if (img) img.src = 'data:' + (result.content_type || 'image/jpeg') + ';base64,' + result.image_base64;
+                if (wrap) wrap.style.display = 'block';
+            }
+            if (action === 'test_video' && result.filename) {
+                const wrap = document.getElementById('pi-diagnostics-test-video-wrap');
+                const video = document.getElementById('pi-diagnostics-test-video');
+                if (video) {
+                    video.src = '/video/test/' + encodeURIComponent(result.filename) + '?t=' + Date.now();
+                    video.load();
+                }
+                if (wrap) wrap.style.display = 'block';
+            }
+        }
+
+        function unwrapPiDiagnosticResult(data) {
+            const result = data && data.result ? data.result : {};
+            return result.result || result;
         }
 
         async function runPiRelayTest() {
@@ -5795,6 +5837,10 @@ def serve_image(filename):
 @app.route('/video/<filename>')
 def serve_video(filename):
     return send_from_directory(VIDEOS_DIR, filename)
+
+@app.route('/video/test/<filename>')
+def serve_test_video(filename):
+    return send_from_directory(os.path.join(VIDEOS_DIR, 'test'), filename)
 
 @app.route('/api/thumbnail/<filename>')
 def serve_thumbnail(filename):

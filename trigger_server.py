@@ -12,6 +12,7 @@ import shutil
 import fcntl
 import json
 import platform
+import base64
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 GPIO_BACKEND = None
@@ -438,12 +439,24 @@ def test_camera_capture():
             fcntl.flock(lock_file, fcntl.LOCK_UN)
         finally:
             lock_file.close()
-    size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+    image_bytes = b''
+    if os.path.exists(filepath):
+        with open(filepath, 'rb') as f:
+            image_bytes = f.read()
+    size = len(image_bytes)
     try:
         os.remove(filepath)
     except Exception:
         pass
-    return {'status': 'success', 'bytes': size, 'rotation': rot, 'roi': roi}
+    return {
+        'status': 'success',
+        'bytes': size,
+        'rotation': rot,
+        'roi': roi,
+        'filename': os.path.basename(filepath),
+        'content_type': 'image/jpeg',
+        'image_base64': base64.b64encode(image_bytes).decode('ascii') if image_bytes else ''
+    }
 
 def run_benchmark(iterations=3):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pi_benchmark.py')
