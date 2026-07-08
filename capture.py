@@ -42,6 +42,9 @@ CAMERA_SATURATION = 1.0
 CAMERA_CONTRAST = 1.0
 CAMERA_SHARPNESS = 1.0
 CAMERA_TUNING_ENABLED = False
+CAMERA_FOCUS_MODE = "manual"
+CAMERA_LENS_POSITION = 15.0
+CAMERA_AUTOFOCUS_WINDOW = ""
 MOTION_PREFILTER_ENABLED = True
 MOTION_THRESHOLD = 6.0
 MOTION_FORCE_INTERVAL_SECONDS = 30
@@ -188,7 +191,7 @@ def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, VIDEO_ROTATION, CONFIDENCE_THRESHOLD
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, REVIEW_WIDTH, REVIEW_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     global CAMERA_AWB, CAMERA_EXPOSURE, CAMERA_METERING, CAMERA_SATURATION, CAMERA_CONTRAST, CAMERA_SHARPNESS
-    global CAMERA_TUNING_ENABLED, CAMERA_SENSOR_MODE
+    global CAMERA_TUNING_ENABLED, CAMERA_SENSOR_MODE, CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION, CAMERA_AUTOFOCUS_WINDOW
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
     global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
     global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
@@ -247,6 +250,12 @@ def fetch_config_from_mac():
                     REVIEW_HEIGHT = int(settings['review_height'])
                 if 'camera_sensor_mode' in settings:
                     CAMERA_SENSOR_MODE = str(settings['camera_sensor_mode']).strip()
+                if 'camera_focus_mode' in settings:
+                    CAMERA_FOCUS_MODE = str(settings['camera_focus_mode']).strip().lower() or "manual"
+                if 'camera_lens_position' in settings:
+                    CAMERA_LENS_POSITION = float(settings['camera_lens_position'])
+                if 'camera_autofocus_window' in settings:
+                    CAMERA_AUTOFOCUS_WINDOW = str(settings['camera_autofocus_window']).strip()
                 if 'analysis_jpeg_quality' in settings:
                     ANALYSIS_JPEG_QUALITY = int(settings['analysis_jpeg_quality'])
                 if 'review_jpeg_quality' in settings:
@@ -277,10 +286,11 @@ def fetch_config_from_mac():
                 if 'sunset_offset_minutes' in settings:
                     SUNSET_OFFSET_MINUTES = int(settings['sunset_offset_minutes'])
                 daylight_start, daylight_end, daylight_source = get_daylight_window(get_eastern_time())
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Motion={8} threshold={9:.1f} force={10}s, Rotation={11}, ROI={12}, VideoRotation={13}, VideoROI={14}, Threshold={15:.2f}, Daylight={16} {17}-{18}".format(
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROI={14}, VideoRotation={15}, VideoROI={16}, Threshold={17:.2f}, Daylight={18} {19}-{20}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     REVIEW_WIDTH, REVIEW_HEIGHT, REVIEW_JPEG_QUALITY,
+                    CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION,
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
                     ROTATION, ROI, VIDEO_ROTATION, VIDEO_ROI, CONFIDENCE_THRESHOLD,
                     daylight_source,
@@ -573,6 +583,7 @@ def build_still_command(width, height, jpeg_quality):
             cmd.extend(["--roi", ROI])
         if CAMERA_SENSOR_MODE:
             cmd.extend(["--mode", CAMERA_SENSOR_MODE])
+        append_rpicam_focus(cmd)
         append_rpicam_tuning(cmd)
         return cmd
 
@@ -589,6 +600,19 @@ def build_still_command(width, height, jpeg_quality):
     if ROI:
         cmd.extend(["-roi", ROI])
     return cmd
+
+def append_rpicam_focus(cmd):
+    focus_mode = (CAMERA_FOCUS_MODE or "").strip().lower()
+    if focus_mode in ("manual", "auto", "continuous"):
+        cmd.extend(["--autofocus-mode", focus_mode])
+    if focus_mode == "manual":
+        cmd.extend(["--lens-position", str(CAMERA_LENS_POSITION)])
+    elif focus_mode == "auto":
+        cmd.append("--autofocus-on-capture")
+        if "--immediate" in cmd:
+            cmd.remove("--immediate")
+    if CAMERA_AUTOFOCUS_WINDOW:
+        cmd.extend(["--autofocus-window", CAMERA_AUTOFOCUS_WINDOW])
 
 def append_rpicam_tuning(cmd):
     if not CAMERA_TUNING_ENABLED:
