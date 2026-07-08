@@ -2502,6 +2502,166 @@ HTML_TEMPLATE = """
                 display: none;
             }
         }
+
+        .settings-shell {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .settings-header {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .settings-header h2 {
+            font-weight: 600;
+            font-size: 1.25rem;
+            margin: 0;
+        }
+
+        .settings-save-badge {
+            display: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            background-color: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            white-space: nowrap;
+        }
+
+        .settings-grid {
+            width: 100%;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+            align-items: start;
+        }
+
+        .settings-panel {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: rgba(15, 23, 42, 0.32);
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+        }
+
+        .settings-panel-wide {
+            grid-column: 1 / -1;
+        }
+
+        .settings-panel h3 {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 1rem;
+            font-weight: 700;
+        }
+
+        .settings-panel summary {
+            cursor: pointer;
+            color: var(--text-primary);
+            font-weight: 700;
+            list-style-position: inside;
+        }
+
+        .settings-fields {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .settings-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            min-width: 0;
+        }
+
+        .settings-field-full {
+            grid-column: 1 / -1;
+        }
+
+        .settings-field label {
+            font-weight: 600;
+            font-size: 0.86rem;
+            color: var(--text-primary);
+        }
+
+        .settings-field input,
+        .settings-field select {
+            width: 100%;
+            min-width: 0;
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.68rem 0.75rem;
+            color: white;
+            font-family: Outfit;
+            font-size: 0.92rem;
+        }
+
+        .settings-field select {
+            background: #0f172a;
+            cursor: pointer;
+        }
+
+        .settings-field span,
+        .settings-help {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            line-height: 1.35;
+        }
+
+        .settings-check {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            min-height: 2.5rem;
+        }
+
+        .settings-check input {
+            width: 1.15rem;
+            height: 1.15rem;
+            cursor: pointer;
+        }
+
+        .settings-check label {
+            color: var(--text-primary);
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .settings-actions {
+            position: sticky;
+            bottom: 0;
+            display: flex;
+            justify-content: flex-end;
+            padding-top: 0.75rem;
+            background: linear-gradient(to top, rgba(11, 18, 32, 0.96), rgba(11, 18, 32, 0));
+            z-index: 2;
+        }
+
+        @media (max-width: 900px) {
+            .settings-grid,
+            .settings-fields {
+                grid-template-columns: 1fr;
+            }
+            .settings-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+        }
     </style>
 </head>
 <body>
@@ -2723,6 +2883,7 @@ HTML_TEMPLATE = """
         let videoFavorites = {};
         let showFavoritesOnly = false;
         let videoCurrentPage = 1;
+        let loadedSettings = {};
 
         // Compilation Playlist Variables
         let allLoadedVideos = [];
@@ -3638,483 +3799,201 @@ HTML_TEMPLATE = """
             });
         }
 
+        function settingsField(id, label, type = 'text', attrs = '', help = '') {
+            return `
+                <div class="settings-field">
+                    <label for="${id}">${label}</label>
+                    <input type="${type}" id="${id}" ${attrs}>
+                    ${help ? `<span>${help}</span>` : ''}
+                </div>
+            `;
+        }
+
+        function settingsSelect(id, label, options, help = '') {
+            return `
+                <div class="settings-field">
+                    <label for="${id}">${label}</label>
+                    <select id="${id}">
+                        ${options.map(opt => `<option value="${opt[0]}">${opt[1]}</option>`).join('')}
+                    </select>
+                    ${help ? `<span>${help}</span>` : ''}
+                </div>
+            `;
+        }
+
+        function settingsCheckbox(id, label) {
+            return `
+                <div class="settings-check">
+                    <input type="checkbox" id="${id}">
+                    <label for="${id}">${label}</label>
+                </div>
+            `;
+        }
+
         function renderSettingsView() {
             const workspace = document.getElementById('workspace-card');
             workspace.innerHTML = `
-                <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1.5rem;">
-                    <h2 style="font-weight: 600; font-size: 1.25rem;">General Settings ⚙️</h2>
-                    <span id="settings-save-badge" style="display: none; font-size: 0.85rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: 20px; background-color: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">Saved successfully!</span>
-                </div>
-
-                <div style="width: 100%; max-width: 600px; display: flex; flex-direction: column; gap: 1.25rem;">
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Analysis Interval (seconds)</label>
-                        <input type="number" id="settings-analysis-interval" min="5" max="300" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">How often the Pi Camera captures and sends stills for inference. Default: 5s.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review Save Interval (seconds)</label>
-                        <input type="number" id="settings-save-interval" min="5" max="3600" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">How often normal analysis frames are saved for review/classification. Default: 30s.</span>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Daylight Schedule</h3>
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Nighttime Mode</label>
-                            <select id="settings-daylight-mode" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                                <option value="sun">Sunrise/Sunset</option>
-                                <option value="fixed">Fixed Hours</option>
-                            </select>
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Sunrise/sunset defaults to Reston, VA and keeps the Pi quiet overnight.</span>
+                <div class="settings-shell">
+                    <div class="settings-header">
+                        <div>
+                            <h2>Settings</h2>
+                            <div class="settings-help">Pi 5 camera capture, detection, spraying, notifications, and storage.</div>
                         </div>
-                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Latitude</label>
-                                <input type="number" id="settings-daylight-latitude" min="-90" max="90" step="0.0001" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Longitude</label>
-                                <input type="number" id="settings-daylight-longitude" min="-180" max="180" step="0.0001" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sunrise Offset (minutes)</label>
-                                <input type="number" id="settings-sunrise-offset" min="-180" max="180" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sunset Offset (minutes)</label>
-                                <input type="number" id="settings-sunset-offset" min="-180" max="180" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Fixed Start Hour</label>
-                                <input type="number" id="settings-daylight-start-hour" min="0" max="23" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Fixed End Hour</label>
-                                <input type="number" id="settings-daylight-end-hour" min="0" max="23" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                        </div>
+                        <span id="settings-save-badge" class="settings-save-badge">Saved successfully!</span>
                     </div>
 
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Capture Quality & Motion</h3>
-                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live Width</label>
-                                <input type="number" id="settings-analysis-width" min="320" max="1920" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                    <div class="settings-grid">
+                        <section class="settings-panel">
+                            <h3>Capture Schedule</h3>
+                            <div class="settings-fields">
+                                ${settingsField('settings-analysis-interval', 'Analyze Every', 'number', 'min="5" max="300"', 'Seconds between Pi still captures.')}
+                                ${settingsField('settings-save-interval', 'Save For Review Every', 'number', 'min="5" max="3600"', 'Seconds between saved review images.')}
+                                ${settingsSelect('settings-daylight-mode', 'Nighttime Mode', [['sun', 'Sunrise/Sunset'], ['fixed', 'Fixed Hours']], 'Sunrise/sunset defaults to Reston, VA.')}
+                                ${settingsField('settings-daylight-latitude', 'Latitude', 'number', 'min="-90" max="90" step="0.0001"')}
+                                ${settingsField('settings-daylight-longitude', 'Longitude', 'number', 'min="-180" max="180" step="0.0001"')}
+                                ${settingsField('settings-sunrise-offset', 'Sunrise Offset', 'number', 'min="-180" max="180" step="5"', 'Minutes.')}
+                                ${settingsField('settings-sunset-offset', 'Sunset Offset', 'number', 'min="-180" max="180" step="5"', 'Minutes.')}
+                                ${settingsField('settings-daylight-start-hour', 'Fixed Start Hour', 'number', 'min="0" max="23" step="1"')}
+                                ${settingsField('settings-daylight-end-hour', 'Fixed End Hour', 'number', 'min="0" max="23" step="1"')}
                             </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live Height</label>
-                                <input type="number" id="settings-analysis-height" min="240" max="1440" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review Width</label>
-                                <input type="number" id="settings-review-width" min="640" max="4608" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review Height</label>
-                                <input type="number" id="settings-review-height" min="480" max="2592" step="16" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sensor Mode</label>
-                                <input type="text" id="settings-camera-sensor-mode" placeholder="2304:1296:10:P" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Focus Mode</label>
-                                <select id="settings-camera-focus-mode" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                                    <option value="manual">Manual</option>
-                                    <option value="auto">Auto on capture</option>
-                                    <option value="continuous">Continuous</option>
-                                    <option value="">Default</option>
-                                </select>
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Lens Position</label>
-                                <input type="number" id="settings-camera-lens-position" min="0" max="32" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">AF Window</label>
-                                <input type="text" id="settings-camera-autofocus-window" placeholder="0.45,0.35,0.5,0.55" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Live JPEG Quality</label>
-                                <input type="number" id="settings-analysis-quality" min="30" max="95" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Review JPEG Quality</label>
-                                <input type="number" id="settings-review-quality" min="50" max="100" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <input type="checkbox" id="settings-motion-enabled" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
-                            <label for="settings-motion-enabled" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable Motion Prefilter</label>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Motion Threshold</label>
-                                <input type="number" id="settings-motion-threshold" min="1" max="40" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Force Analysis Every (seconds)</label>
-                                <input type="number" id="settings-motion-force" min="5" max="600" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                        </div>
-                    </div>
+                        </section>
 
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Gemini API Key</label>
-                        <input type="password" id="settings-gemini-key" placeholder="Enter Gemini API key for Auto-Labeling" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Used by the Google GenAI library for automated raw image tagging.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Pi Camera Rotation (Degrees)</label>
-                        <select id="settings-rotation" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                            <option value="0">0° (Default)</option>
-                            <option value="90">90°</option>
-                            <option value="180">180°</option>
-                            <option value="270">270°</option>
-                        </select>
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Flips the camera orientation captured by raspistill on the Pi.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Pi Video Rotation (Degrees)</label>
-                        <select id="settings-video-rotation" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                            <option value="0">0° (Default)</option>
-                            <option value="180">180°</option>
-                        </select>
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Separate orientation for spray videos, because still and video paths can differ on Pi camera drivers.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Camera Region of Interest (ROI)</label>
-                        <input type="text" id="settings-roi" placeholder="x,y,w,h (e.g. 0.05,0.15,0.3,0.3)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for still captures. Set empty to disable.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Video Region of Interest (Video ROI)</label>
-                        <input type="text" id="settings-video-roi" placeholder="x,y,w,h (e.g. 0.0,0.0,0.6,0.6)" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Digital zoom region from 0.0 to 1.0 (x,y,width,height) for video recordings. Set empty to disable.</span>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Module 3 Tuning</h3>
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <input type="checkbox" id="settings-camera-tuning-enabled" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
-                            <label for="settings-camera-tuning-enabled" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable advanced camera tuning flags</label>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;">
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">AWB</label>
-                                <select id="settings-camera-awb" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                                    <option value="auto">auto</option>
-                                    <option value="daylight">daylight</option>
-                                    <option value="cloudy">cloudy</option>
-                                    <option value="tungsten">tungsten</option>
-                                    <option value="fluorescent">fluorescent</option>
-                                    <option value="indoor">indoor</option>
-                                </select>
+                        <section class="settings-panel">
+                            <h3>Detection & Spray</h3>
+                            <div class="settings-fields">
+                                ${settingsSelect('settings-spray-mode', 'Spray Mode', [['auto', 'Auto Spray'], ['confirm', 'Ask Before Spraying']])}
+                                ${settingsField('settings-confirm-timeout', 'Confirm Timeout', 'number', 'min="15" max="900" step="15"', 'Seconds.')}
+                                ${settingsField('settings-confidence', 'Detection Threshold', 'number', 'min="0.50" max="0.99" step="0.05"')}
+                                ${settingsField('settings-decision-hits', 'Required Hits', 'number', 'min="1" max="5" step="1"')}
+                                ${settingsField('settings-decision-window', 'Decision Window', 'number', 'min="3" max="60" step="1"', 'Seconds.')}
+                                ${settingsField('settings-decision-average', 'Average Confidence', 'number', 'min="0.50" max="0.99" step="0.05"')}
+                                ${settingsField('settings-cooldown', 'Spray Cooldown', 'number', 'min="0" max="600" step="5"', 'Seconds between sprays.')}
+                                ${settingsField('settings-spray-duration', 'Standard Spray', 'number', 'min="1" max="10" step="0.5"', 'Seconds.')}
+                                ${settingsField('settings-long-duration', 'Extended Spray', 'number', 'min="1" max="20" step="0.5"', 'Seconds after inactivity.')}
+                                ${settingsField('settings-threshold', 'Inactivity Threshold', 'number', 'min="0.5" max="24" step="0.5"', 'Hours.')}
                             </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Exposure</label>
-                                <select id="settings-camera-exposure" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                                    <option value="normal">normal</option>
-                                    <option value="short">short</option>
-                                    <option value="long">long</option>
-                                    <option value="sport">sport</option>
-                                </select>
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Metering</label>
-                                <select id="settings-camera-metering" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                                    <option value="centre">centre</option>
-                                    <option value="spot">spot</option>
-                                    <option value="average">average</option>
-                                </select>
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Saturation</label>
-                                <input type="number" id="settings-camera-saturation" min="0" max="2" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Contrast</label>
-                                <input type="number" id="settings-camera-contrast" min="0" max="2" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Sharpness</label>
-                                <input type="number" id="settings-camera-sharpness" min="0" max="2" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            </div>
-                        </div>
-                    </div>
+                        </section>
 
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Calibration</h3>
-                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem;">
-                            <div>
-                                <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.45rem;">Latest captured output</div>
-                                <div style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: #020617; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
-                                    <img id="settings-calibration-img" src="/api/latest_image?t=${Date.now()}" style="width: 100%; height: 100%; object-fit: cover;">
+                        <section class="settings-panel settings-panel-wide">
+                            <h3>Pi Camera</h3>
+                            <div class="settings-fields">
+                                ${settingsField('settings-analysis-width', 'Live Width', 'number', 'min="320" max="1920" step="16"')}
+                                ${settingsField('settings-analysis-height', 'Live Height', 'number', 'min="240" max="1440" step="16"')}
+                                ${settingsField('settings-review-width', 'Review Width', 'number', 'min="640" max="4608" step="16"')}
+                                ${settingsField('settings-review-height', 'Review Height', 'number', 'min="480" max="2592" step="16"')}
+                                ${settingsField('settings-analysis-quality', 'Live JPEG Quality', 'number', 'min="30" max="95" step="5"')}
+                                ${settingsField('settings-review-quality', 'Review JPEG Quality', 'number', 'min="50" max="100" step="5"')}
+                                ${settingsField('settings-camera-sensor-mode', 'Sensor Mode', 'text', 'placeholder="2304:1296:10:P"')}
+                                ${settingsSelect('settings-camera-focus-mode', 'Focus Mode', [['manual', 'Manual'], ['auto', 'Auto on capture'], ['continuous', 'Continuous'], ['', 'Default']])}
+                                ${settingsField('settings-camera-lens-position', 'Lens Position', 'number', 'min="0" max="32" step="0.1"')}
+                                ${settingsField('settings-camera-autofocus-window', 'AF Window', 'text', 'placeholder="0.45,0.35,0.5,0.55"')}
+                                ${settingsSelect('settings-rotation', 'Still Rotation', [['0', '0'], ['90', '90'], ['180', '180'], ['270', '270']])}
+                                ${settingsSelect('settings-video-rotation', 'Video Rotation', [['0', '0'], ['180', '180']])}
+                                ${settingsField('settings-roi', 'Still ROI', 'text', 'placeholder="x,y,w,h"')}
+                                ${settingsField('settings-video-roi', 'Video ROI', 'text', 'placeholder="x,y,w,h"')}
+                                <div class="settings-field settings-field-full">
+                                    ${settingsCheckbox('settings-motion-enabled', 'Enable motion prefilter')}
+                                </div>
+                                ${settingsField('settings-motion-threshold', 'Motion Threshold', 'number', 'min="1" max="40" step="0.5"')}
+                                ${settingsField('settings-motion-force', 'Force Analysis Every', 'number', 'min="5" max="600" step="5"', 'Seconds.')}
+                            </div>
+
+                            <details>
+                                <summary>Advanced image tuning</summary>
+                                <div class="settings-fields" style="margin-top: 0.85rem;">
+                                    <div class="settings-field settings-field-full">
+                                        ${settingsCheckbox('settings-camera-tuning-enabled', 'Apply AWB/exposure/color tuning to stills and videos')}
+                                    </div>
+                                    ${settingsSelect('settings-camera-awb', 'AWB', [['auto', 'Auto'], ['daylight', 'Daylight'], ['cloudy', 'Cloudy'], ['tungsten', 'Tungsten'], ['fluorescent', 'Fluorescent'], ['indoor', 'Indoor']])}
+                                    ${settingsSelect('settings-camera-exposure', 'Exposure', [['normal', 'Normal'], ['short', 'Short'], ['long', 'Long'], ['custom', 'Custom']])}
+                                    ${settingsSelect('settings-camera-metering', 'Metering', [['centre', 'Centre'], ['spot', 'Spot'], ['average', 'Average'], ['matrix', 'Matrix']])}
+                                    ${settingsField('settings-camera-saturation', 'Saturation', 'number', 'min="0" max="2" step="0.1"')}
+                                    ${settingsField('settings-camera-contrast', 'Contrast', 'number', 'min="0" max="2" step="0.1"')}
+                                    ${settingsField('settings-camera-sharpness', 'Sharpness', 'number', 'min="0" max="2" step="0.1"')}
+                                </div>
+                            </details>
+                        </section>
+
+                        <section class="settings-panel settings-panel-wide">
+                            <h3>Camera Calibration</h3>
+                            <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem;">
+                                <div>
+                                    <div class="settings-help" style="margin-bottom: 0.45rem;">Latest captured output</div>
+                                    <div style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: #020617; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden;">
+                                        <img id="settings-calibration-img" src="/api/latest_image?t=${Date.now()}" style="width: 100%; height: 100%; object-fit: cover;">
+                                    </div>
+                                </div>
+                                <div>
+                                    <div class="settings-help" style="margin-bottom: 0.45rem;">Full camera frame ROI map</div>
+                                    <div id="settings-roi-map" style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px), linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px), #020617; background-size: 25% 25%; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden;">
+                                        <div id="settings-calibration-roi-box" style="position: absolute; border: 2px solid #34d399; background: rgba(52, 211, 153, 0.12); box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.28); display: none;"></div>
+                                    </div>
                                 </div>
                             </div>
-                            <div>
-                                <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.45rem;">Full camera frame ROI map</div>
-                                <div id="settings-roi-map" style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px), linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px), #020617; background-size: 25% 25%; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;">
-                                    <div id="settings-calibration-roi-box" style="position: absolute; border: 2px solid #34d399; background: rgba(52, 211, 153, 0.12); box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.28); display: none;"></div>
+                            <div id="settings-calibration-details" class="settings-help"></div>
+                        </section>
+
+                        <section class="settings-panel">
+                            <h3>Model</h3>
+                            <div class="settings-fields">
+                                ${settingsSelect('settings-active-model', 'Active Model', [])}
+                                ${settingsField('settings-gemini-key', 'Gemini API Key', 'password', 'placeholder="Optional auto-label key"')}
+                                <div class="settings-field settings-field-full">
+                                    <label for="settings-checkpoint-name">Save Checkpoint</label>
+                                    <div style="display: flex; gap: 0.5rem;">
+                                        <input type="text" id="settings-checkpoint-name" placeholder="resnet18_morning">
+                                        <button type="button" class="btn" style="background-color: var(--color-add); color: white; border-radius: 8px; padding: 0.68rem 1rem;" onclick="saveCheckpoint()">Save</button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div id="settings-calibration-details" style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;"></div>
-                    </div>
+                        </section>
 
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">SQUIRREL Detection Confidence Threshold</label>
-                        <input type="number" id="settings-confidence" min="0.50" max="0.99" step="0.05" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Model probability threshold (0.50 - 0.99) for a qualifying squirrel detection. Default: 0.70.</span>
-                    </div>
-
-                    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Spray Mode</label>
-                            <select id="settings-spray-mode" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                                <option value="auto">Auto Spray</option>
-                                <option value="confirm">Ask Before Spraying</option>
-                            </select>
-                        </div>
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Confirmation Timeout</label>
-                            <input type="number" id="settings-confirm-timeout" min="15" max="900" step="15" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        </div>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Spray Decision Gate</h3>
-                        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;">
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Required Hits</label>
-                                <input type="number" id="settings-decision-hits" min="1" max="5" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        <section class="settings-panel">
+                            <h3>Notifications</h3>
+                            <div class="settings-fields">
+                                ${settingsSelect('settings-notif-type', 'Channel', [['none', 'None'], ['join', 'Join Push'], ['email', 'Email'], ['both', 'Join + Email']])}
+                                ${settingsField('settings-join-key', 'Join API Key', 'text', 'placeholder="Optional"')}
+                                ${settingsField('settings-smtp-server', 'SMTP Server', 'text', 'placeholder="host:port"')}
+                                ${settingsField('settings-email-to', 'Email To', 'email', 'placeholder="name@example.com"')}
                             </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Window Seconds</label>
-                                <input type="number" id="settings-decision-window" min="3" max="60" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        </section>
+
+                        <section class="settings-panel">
+                            <h3>Storage</h3>
+                            <div class="settings-fields">
+                                ${settingsField('settings-retention-raw', 'Raw Queue Days', 'number', 'min="0.1" max="90" step="0.1"')}
+                                ${settingsField('settings-retention-ns', 'Not-Squirrel Days', 'number', 'min="0.1" max="90" step="0.1"')}
+                                ${settingsField('settings-retention-ns-min', 'Not-Squirrel Minimum', 'number', 'min="5" max="10000" step="5"')}
+                                ${settingsField('settings-retention-trash', 'Trash Days', 'number', 'min="0.1" max="30" step="0.1"')}
+                                ${settingsField('settings-retention-videos', 'Video Days', 'number', 'min="0.1" max="180" step="0.1"')}
                             </div>
-                            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                                <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Average Confidence</label>
-                                <input type="number" id="settings-decision-average" min="0.50" max="0.99" step="0.05" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        </section>
+
+                        <section class="settings-panel">
+                            <h3>Model Accuracy</h3>
+                            <div style="overflow-x: auto; width: 100%;">
+                                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
+                                    <thead>
+                                        <tr style="border-bottom: 1px solid var(--border-color);">
+                                            <th style="padding: 0.65rem; color: var(--text-secondary);">Model</th>
+                                            <th style="padding: 0.65rem; color: var(--text-secondary); text-align: center;">Total</th>
+                                            <th style="padding: 0.65rem; color: var(--text-secondary); text-align: center;">OK</th>
+                                            <th style="padding: 0.65rem; color: var(--text-secondary); text-align: center;">FP</th>
+                                            <th style="padding: 0.65rem; color: var(--text-secondary); text-align: center;">Rate</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="accuracies-table-body">
+                                        <tr><td colspan="5" style="padding: 1rem; text-align: center; color: var(--text-secondary);">No model stats recorded yet.</td></tr>
+                                    </tbody>
+                                </table>
                             </div>
-                        </div>
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Detection can be true without spraying; spraying waits for repeated high-confidence hits in this window.</span>
+                        </section>
                     </div>
 
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Spray Cooldown (seconds)</label>
-                        <input type="number" id="settings-cooldown" min="0" max="600" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Minimum time to wait between sprays. Default: 60s.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Standard Spray Duration (seconds)</label>
-                        <input type="number" id="settings-spray-duration" min="1" max="10" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">The standard duration the solenoid is open. Default: 3.0s.</span>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Spray Controller</h3>
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Controller Type</label>
-                            <select id="settings-spray-controller-type" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                                <option value="pi">Raspberry Pi</option>
-                                <option value="esphome">ESPHome Web API</option>
-                            </select>
-                        </div>
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">ESPHome Controller URL</label>
-                            <input type="text" id="settings-spray-controller-url" placeholder="http://squirrel-soaker-controller.local" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        </div>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Inactivity Extended Spray Duration (seconds)</label>
-                        <input type="number" id="settings-long-duration" min="1" max="20" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">The spray duration used when the system has been idle, to clear air/pressure drops in the hose. Default: 5.0s.</span>
-                    </div>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                        <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Inactivity Threshold (hours)</label>
-                        <input type="number" id="settings-threshold" min="0.5" max="24" step="0.5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                        <span style="font-size: 0.75rem; color: var(--text-secondary);">The amount of hours of inactivity required before triggering the extended spray duration. Default: 2.0 hours.</span>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Camera Source</h3>
-
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <input type="checkbox" id="settings-advanced-camera-sources" onchange="updateAdvancedCameraSourcesVisibility()" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
-                            <label for="settings-advanced-camera-sources" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Show legacy snapshot/RTSP sources</label>
-                        </div>
-
-                        <div id="settings-advanced-camera-source-fields" style="display: none; flex-direction: column; gap: 1rem;">
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Frame Source</label>
-                            <select id="settings-camera-source" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                                <option value="snapshot">Wyze/IP Snapshot URL</option>
-                                <option value="pi">Raspberry Pi Uploads</option>
-                                <option value="rtsp">RTSP Stream</option>
-                            </select>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Snapshot URL</label>
-                            <input type="text" id="settings-snapshot-url" placeholder="http://camera.local/snapshot.jpg" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Optional HTTP JPEG snapshot URL used only when Camera Source is set to snapshot.</span>
-                        </div>
-
-                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem;">
-                            <input type="checkbox" id="settings-enable-rtsp" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
-                            <label for="settings-enable-rtsp" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable RTSP Streaming Backend</label>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">RTSP Stream URL</label>
-                            <input type="text" id="settings-rtsp-url" placeholder="rtsp://pi3:8554/live" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">The RTSP source URL of the Pi camera stream.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Training Stills Motion Save Interval (minutes)</label>
-                            <input type="number" id="settings-rtsp-motion-interval" min="1" max="60" step="1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Minimum time to wait between auto-saving negative candidate images to data/raw/ when motion is detected. Default: 5 min.</span>
-                        </div>
-                        </div>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Notification Settings Alert 🔔</h3>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Notification Channel</label>
-                            <select id="settings-notif-type" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                                <option value="none">None (Disabled)</option>
-                                <option value="join">Joaoapps Join Push Alert</option>
-                                <option value="email">Local SMTP Email Alert</option>
-                                <option value="both">Both (Join Push & Email)</option>
-                            </select>
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Select the alerts channel for water spray trigger notifications.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Joaoapps Join API Key</label>
-                            <input type="text" id="settings-join-key" placeholder="Enter Join API Key" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Your Join api key to receive pushes on your Android/browser devices.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Local SMTP Server IP & Port</label>
-                            <input type="text" id="settings-smtp-server" placeholder="192.169.86.113:25" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Address of your local network mail server. Default: 192.169.86.113:25.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Email Recipient Address (To)</label>
-                            <input type="email" id="settings-email-to" placeholder="e.g. nolan@example.com" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">The destination address where mail notifications will be sent.</span>
-                        </div>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Storage Retention Settings 🧹</h3>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Raw Queue Image Retention (days)</label>
-                            <input type="number" id="settings-retention-raw" min="0.1" max="90" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">How long to keep unclassified raw captures in the review queue. Default: 3.0 days.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Negative Sample (Not Squirrel) Retention (days)</label>
-                            <input type="number" id="settings-retention-ns" min="0.1" max="90" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Pruning threshold for negative birdfeeder frames to prevent bloating. Default: 7.0 days.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Negative Sample Minimum Count</label>
-                            <input type="number" id="settings-retention-ns-min" min="5" max="10000" step="5" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Always preserve at least this many of the newest negative images for ML retraining, even if they are older than the retention threshold. Default: 1000.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Trash Retention (days)</label>
-                            <input type="number" id="settings-retention-trash" min="0.1" max="30" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">How long to keep files in the local trash before permanently emptying them. Default: 1.0 day.</span>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Video Recording Retention (days)</label>
-                            <input type="number" id="settings-retention-videos" min="0.1" max="180" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">How long to keep recorded spray event videos. Default: 14.0 days.</span>
-                        </div>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Inference Model Settings 🧠</h3>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Active Detection Model</label>
-                            <select id="settings-active-model" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
-                                <!-- populated dynamically -->
-                            </select>
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Select the model used for real-time squirrel detection. YOLO (.pt) or ResNet-18 (.pth).</span>
-                        </div>
-
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <input type="checkbox" id="settings-pi-inference-enabled" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
-                            <label for="settings-pi-inference-enabled" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable Pi-side inference experiments</label>
-                        </div>
-
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <input type="checkbox" id="settings-pi-inference-shadow" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
-                            <label for="settings-pi-inference-shadow" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Shadow mode only for Pi inference</label>
-                        </div>
-
-                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Save Current Trained Model Checkpoint</label>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <input type="text" id="settings-checkpoint-name" placeholder="e.g. resnet18_morning" style="flex-grow: 1; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
-                                <button type="button" class="btn" style="background-color: var(--color-add); color: white; border-radius: 8px; padding: 0.75rem 1.25rem;" onclick="saveCheckpoint()">Save Checkpoint 💾</button>
-                            </div>
-                            <span style="font-size: 0.75rem; color: var(--text-secondary);">Copies the active root model.pth checkpoint to a named file (saved in data/models/).</span>
-                        </div>
-                    </div>
-
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                        <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary);">Model Accuracy Tracker 📊</h3>
-                        <div style="overflow-x: auto; width: 100%; border: 1px solid var(--border-color); border-radius: 12px; background: rgba(15, 23, 42, 0.4);">
-                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
-                                <thead>
-                                    <tr style="border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.02);">
-                                        <th style="padding: 0.75rem 1rem; font-weight: 600; color: var(--text-secondary);">Model Name</th>
-                                        <th style="padding: 0.75rem 1rem; font-weight: 600; color: var(--text-secondary); text-align: center;">Total Sprays</th>
-                                        <th style="padding: 0.75rem 1rem; font-weight: 600; color: var(--text-secondary); text-align: center;">Accurate</th>
-                                        <th style="padding: 0.75rem 1rem; font-weight: 600; color: var(--text-secondary); text-align: center;">False Positive</th>
-                                        <th style="padding: 0.75rem 1rem; font-weight: 600; color: var(--text-secondary); text-align: center;">Accuracy Rate</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="accuracies-table-body">
-                                    <tr>
-                                        <td colspan="5" style="padding: 1.5rem; text-align: center; color: var(--text-secondary);">No model stats recorded yet.</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 1rem;">
+                    <div class="settings-actions">
                         <button id="save-settings-btn" class="btn" style="background-color: var(--color-sync); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);" onclick="saveSettings()">
                             <span class="spinner" id="settings-spinner" style="display: none; border-left-color: white;"></span>
-                            <span class="btn-text" id="settings-btn-text">Save Settings 💾</span>
+                            <span class="btn-text" id="settings-btn-text">Save Settings</span>
                         </button>
                     </div>
                 </div>
@@ -4307,75 +4186,94 @@ HTML_TEMPLATE = """
             await runPiDiagnosticAction('test_relay');
         }
 
+        function setSettingValue(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.value = value;
+        }
+
+        function setSettingChecked(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.checked = Boolean(value);
+        }
+
+        function getSettingValue(id, fallback = '') {
+            const el = document.getElementById(id);
+            return el ? el.value : fallback;
+        }
+
+        function getSettingChecked(id, fallback = false) {
+            const el = document.getElementById(id);
+            return el ? el.checked : fallback;
+        }
+
         async function fetchSettings() {
             try {
                 const res = await fetch('/api/settings');
                 const data = await res.json();
                 if (data.status === 'success') {
-                    document.getElementById('settings-analysis-interval').value = data.settings.analysis_interval || data.settings.capture_interval || 5;
-                    document.getElementById('settings-save-interval').value = data.settings.save_interval || 30;
-                    document.getElementById('settings-daylight-mode').value = data.settings.daylight_mode || 'sun';
-                    document.getElementById('settings-daylight-latitude').value = data.settings.daylight_latitude ?? 38.9586;
-                    document.getElementById('settings-daylight-longitude').value = data.settings.daylight_longitude ?? -77.3570;
-                    document.getElementById('settings-sunrise-offset').value = data.settings.sunrise_offset_minutes ?? 0;
-                    document.getElementById('settings-sunset-offset').value = data.settings.sunset_offset_minutes ?? 0;
-                    document.getElementById('settings-daylight-start-hour').value = data.settings.daylight_start_hour ?? 6;
-                    document.getElementById('settings-daylight-end-hour').value = data.settings.daylight_end_hour ?? 20;
-                    document.getElementById('settings-analysis-width').value = data.settings.analysis_width || 1280;
-                    document.getElementById('settings-analysis-height').value = data.settings.analysis_height || 720;
-                    document.getElementById('settings-review-width').value = data.settings.review_width || 2304;
-                    document.getElementById('settings-review-height').value = data.settings.review_height || 1296;
-                    document.getElementById('settings-camera-sensor-mode').value = data.settings.camera_sensor_mode || '2304:1296:10:P';
-                    document.getElementById('settings-camera-focus-mode').value = data.settings.camera_focus_mode ?? 'auto';
-                    document.getElementById('settings-camera-lens-position').value = data.settings.camera_lens_position ?? 1.1;
-                    document.getElementById('settings-camera-autofocus-window').value = data.settings.camera_autofocus_window || '';
-                    document.getElementById('settings-analysis-quality').value = data.settings.analysis_jpeg_quality || 65;
-                    document.getElementById('settings-review-quality').value = data.settings.review_jpeg_quality || 95;
-                    document.getElementById('settings-motion-enabled').checked = data.settings.motion_prefilter_enabled !== false;
-                    document.getElementById('settings-motion-threshold').value = data.settings.motion_threshold || 6.0;
-                    document.getElementById('settings-motion-force').value = data.settings.motion_force_interval || 30;
-                    document.getElementById('settings-gemini-key').value = data.settings.gemini_api_key;
-                    document.getElementById('settings-rotation').value = data.settings.camera_rotation;
-                    document.getElementById('settings-roi').value = data.settings.camera_roi;
-                    document.getElementById('settings-video-rotation').value = data.settings.video_rotation ?? data.settings.camera_rotation ?? 0;
-                    document.getElementById('settings-video-roi').value = data.settings.video_roi || '';
-                    document.getElementById('settings-camera-awb').value = data.settings.camera_awb || 'auto';
-                    document.getElementById('settings-camera-exposure').value = data.settings.camera_exposure || 'normal';
-                    document.getElementById('settings-camera-metering').value = data.settings.camera_metering || 'centre';
-                    document.getElementById('settings-camera-saturation').value = data.settings.camera_saturation ?? 1.0;
-                    document.getElementById('settings-camera-contrast').value = data.settings.camera_contrast ?? 1.0;
-                    document.getElementById('settings-camera-sharpness').value = data.settings.camera_sharpness ?? 1.0;
-                    document.getElementById('settings-camera-tuning-enabled').checked = data.settings.camera_tuning_enabled === true;
-                    document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
-                    document.getElementById('settings-spray-mode').value = data.settings.spray_mode || 'auto';
-                    document.getElementById('settings-confirm-timeout').value = data.settings.spray_confirmation_timeout_seconds || 180;
-                    document.getElementById('settings-decision-hits').value = data.settings.spray_decision_required_hits ?? 2;
-                    document.getElementById('settings-decision-window').value = data.settings.spray_decision_window_seconds ?? 12;
-                    document.getElementById('settings-decision-average').value = data.settings.spray_decision_average_confidence ?? 0.75;
-                    document.getElementById('settings-cooldown').value = data.settings.spray_cooldown_seconds || 60;
-                    document.getElementById('settings-spray-duration').value = data.settings.spray_duration || 3.0;
-                    document.getElementById('settings-spray-controller-type').value = data.settings.spray_controller_type || 'pi';
-                    document.getElementById('settings-spray-controller-url').value = data.settings.spray_controller_url || 'http://squirrel-soaker-controller.local';
-                    document.getElementById('settings-long-duration').value = data.settings.long_spray_duration || 5.0;
-                    document.getElementById('settings-threshold').value = data.settings.long_spray_threshold_hours || 2.0;
-                    document.getElementById('settings-retention-raw').value = data.settings.retention_days_raw || 3.0;
-                    document.getElementById('settings-retention-ns').value = data.settings.retention_days_not_squirrel || 7.0;
-                    document.getElementById('settings-retention-ns-min').value = data.settings.retention_min_not_squirrel || 1000;
-                    document.getElementById('settings-retention-trash').value = data.settings.retention_days_trash || 1.0;
-                    document.getElementById('settings-retention-videos').value = data.settings.retention_days_videos || 14.0;
-                    document.getElementById('settings-notif-type').value = data.settings.notification_type || 'none';
-                    document.getElementById('settings-join-key').value = data.settings.join_api_key || '';
-                    document.getElementById('settings-smtp-server').value = data.settings.email_smtp_server || '';
-                    document.getElementById('settings-email-to').value = data.settings.email_to || '';
-                    document.getElementById('settings-pi-inference-enabled').checked = data.settings.pi_inference_enabled === true;
-                    document.getElementById('settings-pi-inference-shadow').checked = data.settings.pi_inference_shadow_mode !== false;
+                    loadedSettings = data.settings || {};
+                    setSettingValue('settings-analysis-interval', loadedSettings.analysis_interval || loadedSettings.capture_interval || 5);
+                    setSettingValue('settings-save-interval', loadedSettings.save_interval || 30);
+                    setSettingValue('settings-daylight-mode', loadedSettings.daylight_mode || 'sun');
+                    setSettingValue('settings-daylight-latitude', loadedSettings.daylight_latitude ?? 38.9586);
+                    setSettingValue('settings-daylight-longitude', loadedSettings.daylight_longitude ?? -77.3570);
+                    setSettingValue('settings-sunrise-offset', loadedSettings.sunrise_offset_minutes ?? 0);
+                    setSettingValue('settings-sunset-offset', loadedSettings.sunset_offset_minutes ?? 0);
+                    setSettingValue('settings-daylight-start-hour', loadedSettings.daylight_start_hour ?? 6);
+                    setSettingValue('settings-daylight-end-hour', loadedSettings.daylight_end_hour ?? 20);
+                    setSettingValue('settings-analysis-width', loadedSettings.analysis_width || 1280);
+                    setSettingValue('settings-analysis-height', loadedSettings.analysis_height || 720);
+                    setSettingValue('settings-review-width', loadedSettings.review_width || 2304);
+                    setSettingValue('settings-review-height', loadedSettings.review_height || 1296);
+                    setSettingValue('settings-camera-sensor-mode', loadedSettings.camera_sensor_mode || '2304:1296:10:P');
+                    setSettingValue('settings-camera-focus-mode', loadedSettings.camera_focus_mode ?? 'auto');
+                    setSettingValue('settings-camera-lens-position', loadedSettings.camera_lens_position ?? 1.1);
+                    setSettingValue('settings-camera-autofocus-window', loadedSettings.camera_autofocus_window || '');
+                    setSettingValue('settings-analysis-quality', loadedSettings.analysis_jpeg_quality || 65);
+                    setSettingValue('settings-review-quality', loadedSettings.review_jpeg_quality || 95);
+                    setSettingChecked('settings-motion-enabled', loadedSettings.motion_prefilter_enabled !== false);
+                    setSettingValue('settings-motion-threshold', loadedSettings.motion_threshold || 6.0);
+                    setSettingValue('settings-motion-force', loadedSettings.motion_force_interval || 30);
+                    setSettingValue('settings-gemini-key', loadedSettings.gemini_api_key || '');
+                    setSettingValue('settings-rotation', loadedSettings.camera_rotation);
+                    setSettingValue('settings-roi', loadedSettings.camera_roi);
+                    setSettingValue('settings-video-rotation', loadedSettings.video_rotation ?? loadedSettings.camera_rotation ?? 0);
+                    setSettingValue('settings-video-roi', loadedSettings.video_roi || '');
+                    setSettingValue('settings-camera-awb', loadedSettings.camera_awb || 'auto');
+                    setSettingValue('settings-camera-exposure', loadedSettings.camera_exposure || 'normal');
+                    setSettingValue('settings-camera-metering', loadedSettings.camera_metering || 'centre');
+                    setSettingValue('settings-camera-saturation', loadedSettings.camera_saturation ?? 1.0);
+                    setSettingValue('settings-camera-contrast', loadedSettings.camera_contrast ?? 1.0);
+                    setSettingValue('settings-camera-sharpness', loadedSettings.camera_sharpness ?? 1.0);
+                    setSettingChecked('settings-camera-tuning-enabled', loadedSettings.camera_tuning_enabled === true);
+                    setSettingValue('settings-confidence', loadedSettings.confidence_threshold);
+                    setSettingValue('settings-spray-mode', loadedSettings.spray_mode || 'auto');
+                    setSettingValue('settings-confirm-timeout', loadedSettings.spray_confirmation_timeout_seconds || 180);
+                    setSettingValue('settings-decision-hits', loadedSettings.spray_decision_required_hits ?? 2);
+                    setSettingValue('settings-decision-window', loadedSettings.spray_decision_window_seconds ?? 12);
+                    setSettingValue('settings-decision-average', loadedSettings.spray_decision_average_confidence ?? 0.75);
+                    setSettingValue('settings-cooldown', loadedSettings.spray_cooldown_seconds || 60);
+                    setSettingValue('settings-spray-duration', loadedSettings.spray_duration || 3.0);
+                    setSettingValue('settings-long-duration', loadedSettings.long_spray_duration || 5.0);
+                    setSettingValue('settings-threshold', loadedSettings.long_spray_threshold_hours || 2.0);
+                    setSettingValue('settings-retention-raw', loadedSettings.retention_days_raw || 3.0);
+                    setSettingValue('settings-retention-ns', loadedSettings.retention_days_not_squirrel || 7.0);
+                    setSettingValue('settings-retention-ns-min', loadedSettings.retention_min_not_squirrel || 1000);
+                    setSettingValue('settings-retention-trash', loadedSettings.retention_days_trash || 1.0);
+                    setSettingValue('settings-retention-videos', loadedSettings.retention_days_videos || 14.0);
+                    setSettingValue('settings-notif-type', loadedSettings.notification_type || 'none');
+                    setSettingValue('settings-join-key', loadedSettings.join_api_key || '');
+                    setSettingValue('settings-smtp-server', loadedSettings.email_smtp_server || '');
+                    setSettingValue('settings-email-to', loadedSettings.email_to || '');
+                    setSettingChecked('settings-pi-inference-enabled', loadedSettings.pi_inference_enabled === true);
+                    setSettingChecked('settings-pi-inference-shadow', loadedSettings.pi_inference_shadow_mode !== false);
 
-                    document.getElementById('settings-advanced-camera-sources').checked = data.settings.advanced_camera_sources_enabled === true;
-                    document.getElementById('settings-camera-source').value = data.settings.camera_source || 'pi';
-                    document.getElementById('settings-snapshot-url').value = data.settings.snapshot_url || 'http://camera.local/snapshot.jpg';
-                    document.getElementById('settings-enable-rtsp').checked = data.settings.enable_rtsp !== false;
-                    document.getElementById('settings-rtsp-url').value = data.settings.rtsp_stream_url || 'rtsp://pi3:8554/live';
-                    document.getElementById('settings-rtsp-motion-interval').value = data.settings.rtsp_motion_interval_minutes || 5;
+                    setSettingChecked('settings-advanced-camera-sources', loadedSettings.advanced_camera_sources_enabled === true);
+                    setSettingValue('settings-camera-source', loadedSettings.camera_source || 'pi');
+                    setSettingValue('settings-snapshot-url', loadedSettings.snapshot_url || 'http://camera.local/snapshot.jpg');
+                    setSettingChecked('settings-enable-rtsp', loadedSettings.enable_rtsp !== false);
+                    setSettingValue('settings-rtsp-url', loadedSettings.rtsp_stream_url || 'rtsp://pi3:8554/live');
+                    setSettingValue('settings-rtsp-motion-interval', loadedSettings.rtsp_motion_interval_minutes || 5);
                     updateAdvancedCameraSourcesVisibility();
 
                     // Populate active model dropdown
@@ -4422,72 +4320,72 @@ HTML_TEMPLATE = """
             btnText.innerText = 'Saving...';
             badge.style.display = 'none';
 
-            const analysis_interval = parseInt(document.getElementById('settings-analysis-interval').value);
-            const save_interval = parseInt(document.getElementById('settings-save-interval').value);
+            const analysis_interval = parseInt(getSettingValue('settings-analysis-interval', loadedSettings.analysis_interval || 5));
+            const save_interval = parseInt(getSettingValue('settings-save-interval', loadedSettings.save_interval || 30));
             const capture_interval = analysis_interval;
-            const daylight_mode = document.getElementById('settings-daylight-mode').value;
-            const daylight_latitude = parseFloat(document.getElementById('settings-daylight-latitude').value);
-            const daylight_longitude = parseFloat(document.getElementById('settings-daylight-longitude').value);
-            const sunrise_offset_minutes = parseInt(document.getElementById('settings-sunrise-offset').value);
-            const sunset_offset_minutes = parseInt(document.getElementById('settings-sunset-offset').value);
-            const daylight_start_hour = parseInt(document.getElementById('settings-daylight-start-hour').value);
-            const daylight_end_hour = parseInt(document.getElementById('settings-daylight-end-hour').value);
-            const analysis_width = parseInt(document.getElementById('settings-analysis-width').value);
-            const analysis_height = parseInt(document.getElementById('settings-analysis-height').value);
-            const review_width = parseInt(document.getElementById('settings-review-width').value);
-            const review_height = parseInt(document.getElementById('settings-review-height').value);
-            const camera_sensor_mode = document.getElementById('settings-camera-sensor-mode').value;
-            const camera_focus_mode = document.getElementById('settings-camera-focus-mode').value;
-            const camera_lens_position = parseFloat(document.getElementById('settings-camera-lens-position').value);
-            const camera_autofocus_window = document.getElementById('settings-camera-autofocus-window').value;
-            const analysis_jpeg_quality = parseInt(document.getElementById('settings-analysis-quality').value);
-            const review_jpeg_quality = parseInt(document.getElementById('settings-review-quality').value);
-            const motion_prefilter_enabled = document.getElementById('settings-motion-enabled').checked;
-            const motion_threshold = parseFloat(document.getElementById('settings-motion-threshold').value);
-            const motion_force_interval = parseInt(document.getElementById('settings-motion-force').value);
-            const gemini_api_key = document.getElementById('settings-gemini-key').value;
-            const camera_rotation = parseInt(document.getElementById('settings-rotation').value);
-            const camera_roi = document.getElementById('settings-roi').value;
-            const video_rotation = parseInt(document.getElementById('settings-video-rotation').value);
-            const video_roi = document.getElementById('settings-video-roi').value;
-            const camera_awb = document.getElementById('settings-camera-awb').value;
-            const camera_exposure = document.getElementById('settings-camera-exposure').value;
-            const camera_metering = document.getElementById('settings-camera-metering').value;
-            const camera_saturation = parseFloat(document.getElementById('settings-camera-saturation').value);
-            const camera_contrast = parseFloat(document.getElementById('settings-camera-contrast').value);
-            const camera_sharpness = parseFloat(document.getElementById('settings-camera-sharpness').value);
-            const camera_tuning_enabled = document.getElementById('settings-camera-tuning-enabled').checked;
-            const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
-            const spray_mode = document.getElementById('settings-spray-mode').value;
-            const spray_confirmation_timeout_seconds = parseInt(document.getElementById('settings-confirm-timeout').value);
-            const spray_decision_required_hits = parseInt(document.getElementById('settings-decision-hits').value);
-            const spray_decision_window_seconds = parseInt(document.getElementById('settings-decision-window').value);
-            const spray_decision_average_confidence = parseFloat(document.getElementById('settings-decision-average').value);
-            const spray_cooldown_seconds = parseInt(document.getElementById('settings-cooldown').value);
-            const spray_duration = parseFloat(document.getElementById('settings-spray-duration').value);
-            const spray_controller_type = document.getElementById('settings-spray-controller-type').value;
-            const spray_controller_url = document.getElementById('settings-spray-controller-url').value;
-            const long_spray_duration = parseFloat(document.getElementById('settings-long-duration').value);
-            const long_spray_threshold_hours = parseFloat(document.getElementById('settings-threshold').value);
-            const retention_days_raw = parseFloat(document.getElementById('settings-retention-raw').value);
-            const retention_days_not_squirrel = parseFloat(document.getElementById('settings-retention-ns').value);
-            const retention_min_not_squirrel = parseInt(document.getElementById('settings-retention-ns-min').value);
-            const retention_days_trash = parseFloat(document.getElementById('settings-retention-trash').value);
-            const retention_days_videos = parseFloat(document.getElementById('settings-retention-videos').value);
-            const notification_type = document.getElementById('settings-notif-type').value;
-            const join_api_key = document.getElementById('settings-join-key').value;
-            const email_smtp_server = document.getElementById('settings-smtp-server').value;
-            const email_to = document.getElementById('settings-email-to').value;
-            const pi_inference_enabled = document.getElementById('settings-pi-inference-enabled').checked;
-            const pi_inference_shadow_mode = document.getElementById('settings-pi-inference-shadow').checked;
-            const active_model = document.getElementById('settings-active-model') ? document.getElementById('settings-active-model').value : '';
+            const daylight_mode = getSettingValue('settings-daylight-mode', loadedSettings.daylight_mode || 'sun');
+            const daylight_latitude = parseFloat(getSettingValue('settings-daylight-latitude', loadedSettings.daylight_latitude ?? 38.9586));
+            const daylight_longitude = parseFloat(getSettingValue('settings-daylight-longitude', loadedSettings.daylight_longitude ?? -77.3570));
+            const sunrise_offset_minutes = parseInt(getSettingValue('settings-sunrise-offset', loadedSettings.sunrise_offset_minutes ?? 0));
+            const sunset_offset_minutes = parseInt(getSettingValue('settings-sunset-offset', loadedSettings.sunset_offset_minutes ?? 0));
+            const daylight_start_hour = parseInt(getSettingValue('settings-daylight-start-hour', loadedSettings.daylight_start_hour ?? 6));
+            const daylight_end_hour = parseInt(getSettingValue('settings-daylight-end-hour', loadedSettings.daylight_end_hour ?? 20));
+            const analysis_width = parseInt(getSettingValue('settings-analysis-width', loadedSettings.analysis_width || 1280));
+            const analysis_height = parseInt(getSettingValue('settings-analysis-height', loadedSettings.analysis_height || 720));
+            const review_width = parseInt(getSettingValue('settings-review-width', loadedSettings.review_width || 2304));
+            const review_height = parseInt(getSettingValue('settings-review-height', loadedSettings.review_height || 1296));
+            const camera_sensor_mode = getSettingValue('settings-camera-sensor-mode', loadedSettings.camera_sensor_mode || '2304:1296:10:P');
+            const camera_focus_mode = getSettingValue('settings-camera-focus-mode', loadedSettings.camera_focus_mode || 'auto');
+            const camera_lens_position = parseFloat(getSettingValue('settings-camera-lens-position', loadedSettings.camera_lens_position ?? 1.1));
+            const camera_autofocus_window = getSettingValue('settings-camera-autofocus-window', loadedSettings.camera_autofocus_window || '');
+            const analysis_jpeg_quality = parseInt(getSettingValue('settings-analysis-quality', loadedSettings.analysis_jpeg_quality || 65));
+            const review_jpeg_quality = parseInt(getSettingValue('settings-review-quality', loadedSettings.review_jpeg_quality || 95));
+            const motion_prefilter_enabled = getSettingChecked('settings-motion-enabled', loadedSettings.motion_prefilter_enabled !== false);
+            const motion_threshold = parseFloat(getSettingValue('settings-motion-threshold', loadedSettings.motion_threshold || 6.0));
+            const motion_force_interval = parseInt(getSettingValue('settings-motion-force', loadedSettings.motion_force_interval || 30));
+            const gemini_api_key = getSettingValue('settings-gemini-key', loadedSettings.gemini_api_key || '');
+            const camera_rotation = parseInt(getSettingValue('settings-rotation', loadedSettings.camera_rotation ?? 180));
+            const camera_roi = getSettingValue('settings-roi', loadedSettings.camera_roi || '');
+            const video_rotation = parseInt(getSettingValue('settings-video-rotation', loadedSettings.video_rotation ?? loadedSettings.camera_rotation ?? 0));
+            const video_roi = getSettingValue('settings-video-roi', loadedSettings.video_roi || '');
+            const camera_awb = getSettingValue('settings-camera-awb', loadedSettings.camera_awb || 'auto');
+            const camera_exposure = getSettingValue('settings-camera-exposure', loadedSettings.camera_exposure || 'normal');
+            const camera_metering = getSettingValue('settings-camera-metering', loadedSettings.camera_metering || 'centre');
+            const camera_saturation = parseFloat(getSettingValue('settings-camera-saturation', loadedSettings.camera_saturation ?? 1.0));
+            const camera_contrast = parseFloat(getSettingValue('settings-camera-contrast', loadedSettings.camera_contrast ?? 1.0));
+            const camera_sharpness = parseFloat(getSettingValue('settings-camera-sharpness', loadedSettings.camera_sharpness ?? 1.0));
+            const camera_tuning_enabled = getSettingChecked('settings-camera-tuning-enabled', loadedSettings.camera_tuning_enabled === true);
+            const confidence_threshold = parseFloat(getSettingValue('settings-confidence', loadedSettings.confidence_threshold ?? 0.70));
+            const spray_mode = getSettingValue('settings-spray-mode', loadedSettings.spray_mode || 'auto');
+            const spray_confirmation_timeout_seconds = parseInt(getSettingValue('settings-confirm-timeout', loadedSettings.spray_confirmation_timeout_seconds || 180));
+            const spray_decision_required_hits = parseInt(getSettingValue('settings-decision-hits', loadedSettings.spray_decision_required_hits ?? 2));
+            const spray_decision_window_seconds = parseInt(getSettingValue('settings-decision-window', loadedSettings.spray_decision_window_seconds ?? 12));
+            const spray_decision_average_confidence = parseFloat(getSettingValue('settings-decision-average', loadedSettings.spray_decision_average_confidence ?? 0.75));
+            const spray_cooldown_seconds = parseInt(getSettingValue('settings-cooldown', loadedSettings.spray_cooldown_seconds || 60));
+            const spray_duration = parseFloat(getSettingValue('settings-spray-duration', loadedSettings.spray_duration || 3.0));
+            const spray_controller_type = 'pi';
+            const spray_controller_url = loadedSettings.spray_controller_url || 'http://squirrel-soaker-controller.local';
+            const long_spray_duration = parseFloat(getSettingValue('settings-long-duration', loadedSettings.long_spray_duration || 5.0));
+            const long_spray_threshold_hours = parseFloat(getSettingValue('settings-threshold', loadedSettings.long_spray_threshold_hours || 2.0));
+            const retention_days_raw = parseFloat(getSettingValue('settings-retention-raw', loadedSettings.retention_days_raw || 3.0));
+            const retention_days_not_squirrel = parseFloat(getSettingValue('settings-retention-ns', loadedSettings.retention_days_not_squirrel || 7.0));
+            const retention_min_not_squirrel = parseInt(getSettingValue('settings-retention-ns-min', loadedSettings.retention_min_not_squirrel || 1000));
+            const retention_days_trash = parseFloat(getSettingValue('settings-retention-trash', loadedSettings.retention_days_trash || 1.0));
+            const retention_days_videos = parseFloat(getSettingValue('settings-retention-videos', loadedSettings.retention_days_videos || 14.0));
+            const notification_type = getSettingValue('settings-notif-type', loadedSettings.notification_type || 'none');
+            const join_api_key = getSettingValue('settings-join-key', loadedSettings.join_api_key || '');
+            const email_smtp_server = getSettingValue('settings-smtp-server', loadedSettings.email_smtp_server || '');
+            const email_to = getSettingValue('settings-email-to', loadedSettings.email_to || '');
+            const pi_inference_enabled = false;
+            const pi_inference_shadow_mode = true;
+            const active_model = getSettingValue('settings-active-model', loadedSettings.active_model || '');
 
-            const advanced_camera_sources_enabled = document.getElementById('settings-advanced-camera-sources').checked;
-            const camera_source = advanced_camera_sources_enabled ? document.getElementById('settings-camera-source').value : 'pi';
-            const snapshot_url = document.getElementById('settings-snapshot-url').value;
-            const enable_rtsp = document.getElementById('settings-enable-rtsp').checked;
-            const rtsp_stream_url = document.getElementById('settings-rtsp-url').value;
-            const rtsp_motion_interval_minutes = parseInt(document.getElementById('settings-rtsp-motion-interval').value);
+            const advanced_camera_sources_enabled = false;
+            const camera_source = 'pi';
+            const snapshot_url = loadedSettings.snapshot_url || 'http://camera.local/snapshot.jpg';
+            const enable_rtsp = false;
+            const rtsp_stream_url = loadedSettings.rtsp_stream_url || 'rtsp://pi3:8554/live';
+            const rtsp_motion_interval_minutes = parseInt(loadedSettings.rtsp_motion_interval_minutes || 5);
 
             try {
                 const res = await fetch('/api/settings', {
