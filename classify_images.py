@@ -340,8 +340,8 @@ default_settings = {
     'review_width': 2304,
     'review_height': 1296,
     'camera_sensor_mode': '2304:1296:10:P',
-    'camera_focus_mode': 'manual',
-    'camera_lens_position': 15.0,
+    'camera_focus_mode': 'auto',
+    'camera_lens_position': 1.1,
     'camera_autofocus_window': '',
     'analysis_jpeg_quality': 65,
     'review_jpeg_quality': 95,
@@ -4021,8 +4021,8 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-review-width').value = data.settings.review_width || 2304;
                     document.getElementById('settings-review-height').value = data.settings.review_height || 1296;
                     document.getElementById('settings-camera-sensor-mode').value = data.settings.camera_sensor_mode || '2304:1296:10:P';
-                    document.getElementById('settings-camera-focus-mode').value = data.settings.camera_focus_mode ?? 'manual';
-                    document.getElementById('settings-camera-lens-position').value = data.settings.camera_lens_position ?? 15.0;
+                    document.getElementById('settings-camera-focus-mode').value = data.settings.camera_focus_mode ?? 'auto';
+                    document.getElementById('settings-camera-lens-position').value = data.settings.camera_lens_position ?? 1.1;
                     document.getElementById('settings-camera-autofocus-window').value = data.settings.camera_autofocus_window || '';
                     document.getElementById('settings-analysis-quality').value = data.settings.analysis_jpeg_quality || 65;
                     document.getElementById('settings-review-quality').value = data.settings.review_jpeg_quality || 95;
