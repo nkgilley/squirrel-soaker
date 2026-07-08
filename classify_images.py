@@ -4,6 +4,7 @@ import shutil
 import subprocess
 from flask import Flask, jsonify, request, send_from_directory, render_template_string, g
 import threading
+import uuid
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, select, update, delete, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 import datetime
@@ -124,6 +125,24 @@ def build_image_url(filename, base_url):
         return None, None
     return "{0}/image/{1}".format(base_url, filename), image_path
 
+def get_pending_spray_confirmation():
+    global pending_spray_confirmation
+    now = time.time()
+    with pending_spray_lock:
+        if pending_spray_confirmation and pending_spray_confirmation.get('expires_at', 0) <= now:
+            pending_spray_confirmation = None
+        if not pending_spray_confirmation:
+            return None
+        return dict(pending_spray_confirmation)
+
+def clear_pending_spray_confirmation(confirm_id=None):
+    global pending_spray_confirmation
+    with pending_spray_lock:
+        if confirm_id and pending_spray_confirmation and pending_spray_confirmation.get('id') != confirm_id:
+            return False
+        pending_spray_confirmation = None
+        return True
+
 # --- ML Model Configuration ---
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.pth')
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'models')
@@ -158,7 +177,7 @@ def load_active_model():
     settings = load_settings()
     active_model_name = settings.get('active_model', 'yolov8n-oiv7.pt')
     log_message("Loading active model: {0}".format(active_model_name))
-    
+
     # Select device
     import torch
     if torch.backends.mps.is_available():
@@ -167,9 +186,9 @@ def load_active_model():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
-        
+
     model_path = os.path.join(MODELS_DIR, active_model_name)
-    
+
     if active_model_name.endswith('.pt'):
         try:
             from ultralytics import YOLO
@@ -192,19 +211,19 @@ def load_active_model():
         if not os.path.exists(model_path):
             model_path = os.path.join(MODELS_DIR, 'resnet18_default.pth')
             active_model_name = 'resnet18_default.pth'
-            
+
         if os.path.exists(model_path):
             try:
                 import torch.nn as nn
                 from torchvision import models
-                
+
                 checkpoint = torch.load(model_path, map_location=device)
                 model_classes = checkpoint['classes']
-                
+
                 model = models.resnet18()
                 num_ftrs = model.fc.in_features
                 model.fc = nn.Linear(num_ftrs, len(model_classes))
-                
+
                 model.load_state_dict(checkpoint['model_state_dict'])
                 model = model.to(device)
                 model.eval()
@@ -262,13 +281,13 @@ def model_predict(filepath):
         load_active_model()
         if model is None:
             return False, 0.0
-            
+
     try:
         if active_model_type == 'yolo':
             results = model(filepath, device=device.type if device else None, verbose=False)
             is_squirrel = False
             max_confidence = 0.0
-            
+
             if len(results) > 0 and results[0].boxes is not None:
                 for box in results[0].boxes:
                     cls_id = int(box.cls[0].item())
@@ -278,7 +297,7 @@ def model_predict(filepath):
                         if conf > max_confidence:
                             max_confidence = conf
             return is_squirrel, max_confidence
-            
+
         else:
             from PIL import Image
             img = Image.open(filepath).convert('RGB')
@@ -361,6 +380,8 @@ default_settings = {
     'camera_sharpness': 1.0,
     'camera_tuning_enabled': False,
     'confidence_threshold': 0.70,
+    'spray_mode': 'auto',
+    'spray_confirmation_timeout_seconds': 180,
     'spray_decision_required_hits': 2,
     'spray_decision_window_seconds': 12,
     'spray_decision_average_confidence': 0.75,
@@ -453,6 +474,8 @@ health_history = deque(maxlen=720)
 telemetry_lock = threading.Lock()
 detection_history = deque()
 detection_history_lock = threading.Lock()
+pending_spray_confirmation = None
+pending_spray_lock = threading.Lock()
 
 def add_health_sample(source, pi=None, predict=None):
     pi = pi or {}
@@ -533,7 +556,7 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
     # uploaded and converted video file to arrive in data/videos/ from the Pi.
     video_path = None
     video_filename = None
-    
+
     for attempt in range(75):
         try:
             import glob
@@ -549,13 +572,13 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
         except Exception:
             pass
         time.sleep(1)
-        
+
     if not video_path:
         log_message("[Notification] Warning: No new spray video was found in VIDEOS_DIR after 75s polling.")
 
     settings = load_settings()
     notification_type = settings.get('notification_type', 'join')
-    
+
     title = "🐿️ Squirrel Blasted! 💦"
     base_url = get_local_base_url()
     _image_url, image_path = build_image_url(image_filename, base_url)
@@ -569,9 +592,9 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
         msg += "\n\nTrigger image is available in the app."
     if video_path and video_filename:
         msg += "\n\nSpray video is available in the app."
-        
+
     log_message(msg)
-    
+
     # Send Join Push
     if notification_type in ['join', 'both']:
         api_key = settings.get('join_api_key')
@@ -612,15 +635,15 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
                     port = int(parts[1])
                 else:
                     host = smtp_server
-                
+
                 mime_msg = MIMEMultipart()
                 mime_msg['Subject'] = title
                 mime_msg['From'] = 'squirrel-sentry@localhost'
                 mime_msg['To'] = to_email
-                
+
                 # Attach text message
                 mime_msg.attach(MIMEText(msg, 'plain'))
-                
+
                 if image_path and os.path.exists(image_path):
                     try:
                         with open(image_path, 'rb') as attachment:
@@ -646,22 +669,125 @@ def send_blast_notification(blast_type, confidence=None, image_filename=None):
                             mime_msg.attach(part)
                     except Exception as ve:
                         log_message("[Notification] Error attaching video: {0}".format(ve))
-                
+
                 with smtplib.SMTP(host, port, timeout=10) as server:
                     server.send_message(mime_msg)
                 log_message("[Notification] Local SMTP email sent successfully.")
             except Exception as e:
                 log_message("[Notification] Error sending SMTP email: {0}".format(e))
 
+def send_spray_confirmation_notification(pending):
+    settings = load_settings()
+    notification_type = settings.get('notification_type', 'join')
+    if notification_type == 'none':
+        return
+
+    base_url = get_local_base_url()
+    confirm_url = "{0}/?confirm={1}".format(base_url, pending.get('id'))
+    confidence = pending.get('confidence')
+    confidence_text = "{0:.1f}%".format(confidence * 100) if confidence is not None else "n/a"
+    title = "Squirrel detected: confirm spray"
+    msg = (
+        "Spray threshold met. Confidence: {0}. "
+        "Open the dashboard to review the live image and confirm the spray: {1}"
+    ).format(confidence_text, confirm_url)
+
+    log_message("[Confirm Spray] {0}".format(msg))
+
+    if notification_type in ['join', 'both']:
+        api_key = settings.get('join_api_key')
+        if api_key:
+            import urllib.request
+            import urllib.parse
+            try:
+                params = {
+                    'apikey': api_key,
+                    'title': title,
+                    'text': msg,
+                    'url': confirm_url,
+                    'deviceId': 'group.all'
+                }
+                url = "https://joinjoaomgcd.appspot.com/_ah/api/messaging/v1/sendPush?" + urllib.parse.urlencode(params)
+                req = urllib.request.Request(url, method='GET')
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    response.read()
+                log_message("[Notification] Join confirmation push sent successfully.")
+            except Exception as e:
+                log_message("[Notification] Error sending Join confirmation push: {0}".format(e))
+
+    if notification_type in ['email', 'both']:
+        smtp_server = settings.get('email_smtp_server', '192.169.86.113:25')
+        to_email = settings.get('email_to')
+        if smtp_server and to_email:
+            import smtplib
+            from email.mime.text import MIMEText
+            try:
+                host = '192.169.86.113'
+                port = 25
+                if ':' in smtp_server:
+                    parts = smtp_server.split(':')
+                    host = parts[0]
+                    port = int(parts[1])
+                else:
+                    host = smtp_server
+                mime_msg = MIMEText(msg, 'plain')
+                mime_msg['Subject'] = title
+                mime_msg['From'] = 'squirrel-sentry@localhost'
+                mime_msg['To'] = to_email
+                with smtplib.SMTP(host, port, timeout=10) as server:
+                    server.send_message(mime_msg)
+                log_message("[Notification] Confirmation email sent successfully.")
+            except Exception as e:
+                log_message("[Notification] Error sending confirmation email: {0}".format(e))
+
+def create_or_update_pending_spray(confidence, image_filename, duration, decision, model_name):
+    global pending_spray_confirmation
+    settings = load_settings()
+    now = time.time()
+    timeout_seconds = max(15, int(settings.get('spray_confirmation_timeout_seconds', 180)))
+    notify = False
+
+    with pending_spray_lock:
+        if pending_spray_confirmation and pending_spray_confirmation.get('expires_at', 0) > now:
+            if confidence is not None and confidence >= pending_spray_confirmation.get('confidence', 0):
+                pending_spray_confirmation.update({
+                    'confidence': confidence,
+                    'image_filename': image_filename,
+                    'duration': duration,
+                    'decision': decision,
+                    'model_name': model_name,
+                    'updated_at': now,
+                    'expires_at': now + timeout_seconds
+                })
+            return dict(pending_spray_confirmation), False
+
+        pending_spray_confirmation = {
+            'id': uuid.uuid4().hex,
+            'created_at': now,
+            'updated_at': now,
+            'expires_at': now + timeout_seconds,
+            'confidence': confidence,
+            'image_filename': image_filename,
+            'duration': duration,
+            'decision': decision,
+            'model_name': model_name
+        }
+        pending = dict(pending_spray_confirmation)
+        notify = True
+
+    if notify:
+        threading.Thread(target=send_spray_confirmation_notification, args=(pending,), daemon=True).start()
+    return pending, notify
+
 def log_blast(blast_type, confidence=None, model_name=None, image_filename=None, duration=None):
     import datetime
     now = datetime.datetime.now()
     if duration is None:
         duration = get_current_spray_duration()
-    
+
     if model_name is None and blast_type == 'auto':
         model_name = active_model_name
-        
+
     try:
         db_blast = DBBlast(
             timestamp=now,
@@ -673,7 +799,7 @@ def log_blast(blast_type, confidence=None, model_name=None, image_filename=None,
         )
         db_session.add(db_blast)
         db_session.commit()
-        
+
         # Asynchronous notification dispatch
         import threading
         threading.Thread(target=send_blast_notification, args=(blast_type, confidence, image_filename)).start()
@@ -686,15 +812,15 @@ def get_current_spray_duration():
     std_duration = settings.get('spray_duration', 3.0)
     long_duration = settings.get('long_spray_duration', 5.0)
     threshold_hours = settings.get('long_spray_threshold_hours', 2.0)
-    
+
     try:
         last_blast = db_session.query(DBBlast).order_by(DBBlast.timestamp.desc()).first()
         if not last_blast:
             return long_duration
-            
+
         time_diff = datetime.datetime.now() - last_blast.timestamp
         diff_hours = time_diff.total_seconds() / 3600.0
-        
+
         if diff_hours >= threshold_hours:
             return long_duration
         else:
@@ -767,7 +893,7 @@ def clean_directory_by_age(directory, retention_days):
 def clean_videos_directory(directory, retention_days):
     if not os.path.exists(directory):
         return 0
-    
+
     deleted = 0
     now = time.time()
     cutoff = now - (retention_days * 86400)
@@ -778,7 +904,7 @@ def clean_videos_directory(directory, retention_days):
                 db_vid = db_session.query(DBVideo).filter_by(filename=f).first()
                 if db_vid and db_vid.is_favorite:
                     continue
-                
+
                 mtime = os.path.getmtime(fp)
                 if mtime < cutoff:
                     deleted += delete_video_files(f)
@@ -948,17 +1074,17 @@ def extract_all_false_alarm_training_frames(max_frames=6):
 def clean_not_squirrel_directory(not_squirrel_dir, retention_days, min_count):
     if not os.path.exists(not_squirrel_dir):
         return 0
-        
+
     try:
         db_imgs = db_session.query(DBImage).filter_by(category='not_squirrel').order_by(DBImage.captured_at.desc()).all()
     except Exception as e:
         print("Error fetching not_squirrel images from DB for cleanup:", e)
         return 0
-        
+
     now = datetime.datetime.now()
     cutoff = now - datetime.timedelta(days=retention_days)
     deleted = 0
-    
+
     for idx, db_img in enumerate(db_imgs):
         if idx < min_count:
             continue
@@ -971,7 +1097,7 @@ def clean_not_squirrel_directory(not_squirrel_dir, retention_days, min_count):
                 deleted += 1
             except Exception as e:
                 print("Error deleting old not_squirrel image {0}: {1}".format(fp, e))
-                
+
     if deleted > 0:
         try:
             db_session.commit()
@@ -984,30 +1110,30 @@ def run_storage_cleanup():
     while True:
         try:
             settings = load_settings()
-            
+
             raw_days = settings.get('retention_days_raw', 3.0)
             ns_days = settings.get('retention_days_not_squirrel', 7.0)
             ns_min = settings.get('retention_min_not_squirrel', 1000)
             trash_days = settings.get('retention_days_trash', 1.0)
             vid_days = settings.get('retention_days_videos', 14.0)
-            
+
             log_message("[Storage Cleanup] Running automated cleanup...")
-            
+
             del_raw = clean_directory_by_age(RAW_DIR, raw_days)
             del_trash = clean_directory_by_age(TRASH_DIR, trash_days)
             del_vid = clean_videos_directory(VIDEOS_DIR, vid_days)
             del_ns = clean_not_squirrel_directory(NOT_SQUIRREL_DIR, ns_days, ns_min)
-            
+
             if del_raw > 0 or del_trash > 0 or del_vid > 0 or del_ns > 0:
                 log_message("[Storage Cleanup] Done. Deleted: raw={0}, trash={1}, videos={2}, not_squirrel={3}".format(
                     del_raw, del_trash, del_vid, del_ns
                 ))
             else:
                 log_message("[Storage Cleanup] Done. No files needed pruning.")
-                
+
         except Exception as e:
             log_message("Error in storage cleanup loop: {0}".format(e))
-            
+
         time.sleep(3600)
 
 # Ensure directories exist
@@ -1044,10 +1170,10 @@ def sync_db_with_filesystem():
                 for f in os.listdir(directory):
                     if f.lower().endswith(('.jpg', '.jpeg', '.png')):
                         disk_images[f] = cat
-                        
+
         db_imgs = db_session.query(DBImage).all()
         db_images_map = {img.filename: img for img in db_imgs}
-        
+
         # 1. Update/insert images from disk
         for filename, disk_cat in disk_images.items():
             if filename in db_images_map:
@@ -1068,12 +1194,12 @@ def sync_db_with_filesystem():
                     is_auto_classified=filename.startswith('img_auto_')
                 )
                 db_session.add(new_img)
-                
+
         # 2. Remove images from DB that no longer exist on disk
         for filename, db_img in db_images_map.items():
             if filename not in disk_images:
                 db_session.delete(db_img)
-                
+
         db_session.commit()
         print("Database filesystem sync complete.")
     except Exception as e:
@@ -1083,7 +1209,7 @@ def sync_db_with_filesystem():
 def init_db_and_migrate():
     # 1. Create tables
     Base.metadata.create_all(bind=engine)
-    
+
     # 1.5 Migrate event/media columns if needed.
     try:
         result = db_session.execute(text("PRAGMA table_info(blasts)")).fetchall()
@@ -1129,7 +1255,7 @@ def init_db_and_migrate():
     except Exception as e:
         db_session.rollback()
         log_message("[Migration] Error backfilling event/media links: {0}".format(e))
-    
+
     # 2. Check if we need to migrate settings
     try:
         import json
@@ -1147,7 +1273,7 @@ def init_db_and_migrate():
             else:
                 save_settings(default_settings)
                 log_message("[Migration] Initialized default settings in SQLite database.")
-                
+
             if os.path.exists(AUTOMATION_STATUS_FILE):
                 try:
                     with open(AUTOMATION_STATUS_FILE, 'r') as f:
@@ -1159,7 +1285,7 @@ def init_db_and_migrate():
                     log_message("[Migration] Error migrating automation_status.json: {0}".format(e))
             else:
                 save_automation_status(True)
-                
+
             if settings_migrated and os.path.exists(SETTINGS_FILE):
                 try:
                     shutil.move(SETTINGS_FILE, SETTINGS_FILE + '.bak')
@@ -1182,15 +1308,15 @@ def init_db_and_migrate():
                         blasts_data = json.load(f)
                     if not isinstance(blasts_data, list):
                         blasts_data = []
-                    
+
                     log_message("[Migration] Found {0} blasts to migrate.".format(len(blasts_data)))
-                    
+
                     video_files = []
                     if os.path.exists(VIDEOS_DIR):
                         video_files = [f for f in os.listdir(VIDEOS_DIR) if f.lower().endswith('.mp4')]
-                    
+
                     videos_to_insert = {}
-                    
+
                     for entry in blasts_data:
                         entry_time_str = entry.get('timestamp')
                         if not entry_time_str:
@@ -1199,14 +1325,14 @@ def init_db_and_migrate():
                             entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
                         except Exception:
                             continue
-                            
+
                         matching_video = None
                         for vf in video_files:
                             v_time = get_video_timestamp(vf)
                             if v_time and abs((v_time - entry_time).total_seconds()) < 6.0:
                                 matching_video = vf
                                 break
-                                
+
                         blast = DBBlast(
                             timestamp=entry_time,
                             type=entry.get('type', 'auto'),
@@ -1217,7 +1343,7 @@ def init_db_and_migrate():
                         )
                         db_session.add(blast)
                         db_session.flush()
-                        
+
                         if matching_video:
                             videos_to_insert[matching_video] = {
                                 'filename': matching_video,
@@ -1226,7 +1352,7 @@ def init_db_and_migrate():
                                 'classification': entry.get('classification'),
                                 'created_at': get_video_timestamp(matching_video) or entry_time
                             }
-                    
+
                     for filename, v_info in videos_to_insert.items():
                         db_vid = DBVideo(
                             filename=v_info['filename'],
@@ -1236,10 +1362,10 @@ def init_db_and_migrate():
                             created_at=v_info['created_at']
                         )
                         db_session.add(db_vid)
-                        
+
                     db_session.commit()
                     log_message("[Migration] Successfully migrated blasts log to SQLite DB.")
-                    
+
                     try:
                         shutil.move(BLASTS_LOG_FILE, BLASTS_LOG_FILE + '.bak')
                     except Exception as e:
@@ -1259,7 +1385,7 @@ def get_stats():
         raw_count = db_session.query(DBImage).filter_by(category='raw').count()
         squirrel_count = db_session.query(DBImage).filter_by(category='squirrel').count()
         not_squirrel_count = db_session.query(DBImage).filter_by(category='not_squirrel').count()
-        
+
         latest_img = db_session.query(DBImage).order_by(DBImage.captured_at.desc()).first()
         latest_mtime = latest_img.captured_at.timestamp() if latest_img else 0
         with frame_lock:
@@ -1271,7 +1397,7 @@ def get_stats():
         squirrel_count = 0
         not_squirrel_count = 0
         latest_mtime = 0
-        
+
     import datetime
     current_hour = datetime.datetime.now().hour
 
@@ -1337,12 +1463,12 @@ def process_synced_videos():
     with video_processing_lock:
         if not os.path.exists(VIDEOS_DIR):
             os.makedirs(VIDEOS_DIR, exist_ok=True)
-            
+
         ffmpeg_path = shutil.which('ffmpeg')
         if not ffmpeg_path:
             print("Warning: ffmpeg not found. Cannot convert .h264 videos to .mp4.")
             return
-            
+
         for filename in os.listdir(RAW_DIR):
             if filename.lower().endswith('.h264'):
                 h264_path = os.path.join(RAW_DIR, filename)
@@ -1350,14 +1476,14 @@ def process_synced_videos():
                 mp4_path = os.path.join(VIDEOS_DIR, mp4_filename)
                 temp_mp4_path = mp4_path + '.tmp'
                 temp_thumb_path = None
-                
+
                 cmd = [ffmpeg_path, '-y', '-i', h264_path, '-c:v', 'copy', '-f', 'mp4', temp_mp4_path]
                 try:
                     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     os.rename(temp_mp4_path, mp4_path)
                     os.remove(h264_path)
                     print("Successfully converted {0} to {1}".format(filename, mp4_filename))
-                    
+
                     thumb_filename = os.path.splitext(mp4_filename)[0] + '.jpg'
                     thumb_path = os.path.join(VIDEOS_DIR, thumb_filename)
                     temp_thumb_path = thumb_path + '.tmp'
@@ -1371,7 +1497,7 @@ def process_synced_videos():
                                 os.remove(path)
                             except Exception:
                                 pass
-                
+
     try:
         for filename in os.listdir(VIDEOS_DIR):
             if filename.startswith('compilation_'):
@@ -1379,7 +1505,7 @@ def process_synced_videos():
             if filename.lower().endswith('.mp4'):
                 db_vid = db_session.query(DBVideo).filter_by(filename=filename).first()
                 video_time = get_video_timestamp(filename)
-                
+
                 if not db_vid:
                     created_at = video_time if video_time else datetime.datetime.now()
                     db_vid = DBVideo(
@@ -1391,7 +1517,7 @@ def process_synced_videos():
                     )
                     db_session.add(db_vid)
                     db_session.flush()
-                
+
                 if video_time:
                     # Query candidate blasts within +/- 14 hours to allow timezone offset matching
                     candidates = db_session.query(DBBlast).filter(
@@ -1402,7 +1528,7 @@ def process_synced_videos():
                     ).filter(
                         (DBBlast.video_filename == None) | (DBBlast.video_filename == filename) | (DBBlast.id == db_vid.blast_id)
                     ).order_by(DBBlast.timestamp.asc()).all()
-                    
+
                     matched_blast = None
                     min_error = 999.0
                     for b_candidate in candidates:
@@ -1413,7 +1539,7 @@ def process_synced_videos():
                         if error <= 6.0 and error < min_error:
                             matched_blast = b_candidate
                             min_error = error
-                            
+
                     if matched_blast:
                         link_video_to_blast(db_vid, matched_blast)
                         # Heal the timestamp: align the database record to the local Eastern Time from the filename
@@ -1422,7 +1548,7 @@ def process_synced_videos():
     except Exception as e:
         db_session.rollback()
         print("Error syncing video files with DB:", e)
-        
+
     for filename in os.listdir(VIDEOS_DIR):
         if filename.startswith('compilation_'):
             continue
@@ -1483,13 +1609,13 @@ HTML_TEMPLATE = """
             --border-color: rgba(255, 255, 255, 0.08);
             --text-primary: #f8fafc;
             --text-secondary: #94a3b8;
-            
+
             --color-squirrel: #10b981;
             --color-not-squirrel: #ef4444;
             --color-delete: #f59e0b;
             --color-sync: #3b82f6;
             --color-accuracy: #a855f7;
-            
+
             --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.15);
         }
 
@@ -1513,7 +1639,7 @@ HTML_TEMPLATE = """
             display: flex;
             flex-direction: column;
             overflow-x: hidden;
-            background-image: 
+            background-image:
                 radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.05) 0px, transparent 50%),
                 radial-gradient(at 100% 100%, rgba(239, 68, 68, 0.05) 0px, transparent 50%),
                 radial-gradient(at 50% 50%, rgba(59, 130, 246, 0.03) 0px, transparent 80%);
@@ -2524,7 +2650,7 @@ HTML_TEMPLATE = """
                 <img id="modal-img-element" src="" alt="Expanded preview">
             </div>
             <div id="modal-img-filename" class="image-filename" style="margin-top: 1rem; text-align: center;"></div>
-            
+
             <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 1rem;">
                 <button class="btn" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="navigateModal(-1)" id="modal-prev-btn">&lt; Prev</button>
                 <span style="font-size: 0.9rem; color: var(--text-secondary); font-weight: 600;" id="modal-image-counter">
@@ -2668,7 +2794,7 @@ HTML_TEMPLATE = """
             if (mode !== 'videos') {
                 showFavoritesOnly = false;
             }
-            
+
             // If navigating away from train and training is not active, clear polling
             if (mode !== 'train' && !isTrainingRunning && trainPollingInterval) {
                 clearInterval(trainPollingInterval);
@@ -2679,7 +2805,7 @@ HTML_TEMPLATE = """
                 clearInterval(logsPollingInterval);
                 logsPollingInterval = null;
             }
-            
+
             const modes = ['dashboard', 'videos', 'queue', 'squirrel', 'not_squirrel', 'train', 'diagnostics', 'settings', 'logs'];
             modes.forEach(m => {
                 const btn = document.getElementById(`mode-${m}`);
@@ -2694,7 +2820,7 @@ HTML_TEMPLATE = """
                         btn.style.border = '1px solid var(--border-color)';
                     }
                 }
-                
+
                 const mobTab = document.getElementById(`mob-tab-${m}`);
                 if (mobTab) {
                     if (m === mode) {
@@ -2722,12 +2848,12 @@ HTML_TEMPLATE = """
             }
         }
 
-        function updateAutomationButton(enabled) {
+        function updateAutomationButton(enabled, sprayMode = 'auto') {
             const btn = document.getElementById('automation-btn');
             const txt = document.getElementById('automation-text');
             if (!btn || !txt) return;
             if (enabled) {
-                txt.innerText = 'Automation: Active 🟢';
+                txt.innerText = sprayMode === 'confirm' ? 'Automation: Confirm 🟡' : 'Automation: Active 🟢';
                 btn.style.backgroundColor = 'var(--color-squirrel)';
                 btn.style.color = 'white';
                 btn.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)';
@@ -2741,11 +2867,91 @@ HTML_TEMPLATE = """
             }
         }
 
+        function renderPendingSpray(pending) {
+            const panel = document.getElementById('pending-spray-panel');
+            if (!panel) return;
+            if (!pending) {
+                panel.style.display = 'none';
+                panel.dataset.pendingId = '';
+                return;
+            }
+            panel.style.display = 'block';
+            panel.dataset.pendingId = pending.id || '';
+            const confidence = pending.confidence === null || pending.confidence === undefined ? 'n/a' : `${(Number(pending.confidence) * 100).toFixed(1)}%`;
+            const expires = pending.expires_in_seconds === null || pending.expires_in_seconds === undefined ? '--' : `${Math.max(0, Number(pending.expires_in_seconds)).toFixed(0)}s`;
+            const decision = pending.decision || {};
+            const title = document.getElementById('pending-spray-title');
+            const details = document.getElementById('pending-spray-details');
+            const img = document.getElementById('pending-spray-img');
+            if (title) title.textContent = `Squirrel detected (${confidence})`;
+            if (details) {
+                details.textContent = `${decision.hits || '--'}/${decision.required_hits || '--'} hits, avg ${decision.average_confidence !== undefined ? (Number(decision.average_confidence) * 100).toFixed(1) + '%' : '--'}, expires in ${expires}`;
+            }
+            if (img) img.src = `/api/latest_image?t=${Date.now()}`;
+        }
+
+        async function refreshPendingSpray() {
+            try {
+                const res = await fetch('/api/pending_spray');
+                const data = await res.json();
+                renderPendingSpray(data.pending);
+            } catch (e) {
+                console.error("Error fetching pending spray confirmation:", e);
+            }
+        }
+
+        async function confirmPendingSpray() {
+            const panel = document.getElementById('pending-spray-panel');
+            const id = panel ? panel.dataset.pendingId : '';
+            const btn = document.getElementById('pending-confirm-btn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Spraying...';
+            }
+            try {
+                const res = await fetch('/api/confirm_spray', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                const data = await res.json();
+                if (data.status !== 'success') {
+                    alert("Spray failed: " + data.message);
+                }
+                await refreshPendingSpray();
+                await updateDashboardData();
+            } catch (e) {
+                console.error("Error confirming spray:", e);
+                alert("Error confirming spray.");
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Spray';
+                }
+            }
+        }
+
+        async function dismissPendingSpray() {
+            const panel = document.getElementById('pending-spray-panel');
+            const id = panel ? panel.dataset.pendingId : '';
+            try {
+                await fetch('/api/dismiss_spray', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                await refreshPendingSpray();
+            } catch (e) {
+                console.error("Error dismissing pending spray:", e);
+            }
+        }
+
         async function fetchAutomationStatus() {
             try {
                 const res = await fetch('/api/automation_status');
                 const data = await res.json();
-                updateAutomationButton(data.enabled);
+                updateAutomationButton(data.enabled, data.spray_mode);
+                renderPendingSpray(data.pending);
             } catch (e) {
                 console.error("Error fetching automation status:", e);
             }
@@ -2755,7 +2961,7 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/toggle_automation', { method: 'POST' });
                 const data = await res.json();
-                updateAutomationButton(data.enabled);
+                updateAutomationButton(data.enabled, data.spray_mode);
             } catch (e) {
                 console.error("Error toggling automation:", e);
             }
@@ -2774,6 +2980,25 @@ HTML_TEMPLATE = """
                 <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1.5rem;">
                     <h2 style="font-weight: 600; font-size: 1.25rem;">System Dashboard 📊</h2>
                     <span style="font-size: 0.85rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: 20px; background-color: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">Live Mode</span>
+                </div>
+
+                <div id="pending-spray-panel" style="display: none; border: 1px solid rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.10); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem;">
+                    <div style="display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 1rem; align-items: center;">
+                        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                            <div>
+                                <div style="font-size: 0.8rem; text-transform: uppercase; color: #fbbf24; font-weight: 700;">Spray Confirmation Needed</div>
+                                <div id="pending-spray-title" style="font-size: 1.2rem; font-weight: 700; color: var(--text-primary); margin-top: 0.25rem;">Squirrel detected</div>
+                                <div id="pending-spray-details" style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.35rem;"></div>
+                            </div>
+                            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                                <button id="pending-confirm-btn" class="btn" style="background-color: var(--color-not-squirrel); color: white; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);" onclick="confirmPendingSpray()">Spray</button>
+                                <button id="pending-dismiss-btn" class="btn" style="background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="dismissPendingSpray()">Dismiss</button>
+                            </div>
+                        </div>
+                        <div style="position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 8px; border: 1px solid var(--border-color); background: #020617;">
+                            <img id="pending-spray-img" src="/api/latest_image" style="width: 100%; height: 100%; object-fit: cover;">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="dash-grid">
@@ -3150,10 +3375,10 @@ HTML_TEMPLATE = """
             try {
                 const statsRes = await fetch('/api/next_image?mode=queue');
                 const statsData = await statsRes.json();
-                
+
                 if (statsData.stats) {
                     rtspEnabled = Boolean(statsData.stats.enable_rtsp);
-                    
+
                     const img = document.getElementById('dash-feed-img');
                     const subtext = document.getElementById('dash-feed-subtext');
                     if (img) {
@@ -3173,7 +3398,7 @@ HTML_TEMPLATE = """
                     document.getElementById('stat-raw').innerText = statsData.stats.raw_count;
                     document.getElementById('stat-squirrel').innerText = statsData.stats.squirrel_count;
                     document.getElementById('stat-not-squirrel').innerText = statsData.stats.not_squirrel_count;
-                    
+
                     const qVal = document.getElementById('dash-queue-count');
                     const qSub = document.getElementById('dash-queue-sub');
                     if (qVal) qVal.innerText = statsData.stats.raw_count;
@@ -3184,7 +3409,7 @@ HTML_TEMPLATE = """
                     const mtime = updateLiveSnapshotTimestamp(statsData.stats);
                     const now = Date.now();
                     const ageSeconds = (now - mtime) / 1000;
-                    
+
                     const overlay = document.getElementById('dash-feed-overlay');
                     if (overlay) {
                         if (cameraSource === 'pi' && (hour < 6 || hour >= 20)) {
@@ -3202,15 +3427,16 @@ HTML_TEMPLATE = """
 
                 const autoRes = await fetch('/api/automation_status');
                 const autoData = await autoRes.json();
-                
+                renderPendingSpray(autoData.pending);
+
                 const statusVal = document.getElementById('dash-system-status');
                 const statusSub = document.getElementById('dash-system-status-sub');
                 if (statusVal) {
-                    statusVal.innerText = autoData.enabled ? 'ACTIVE 🟢' : 'PAUSED 🔴';
+                    statusVal.innerText = autoData.enabled ? (autoData.spray_mode === 'confirm' ? 'CONFIRM 🟡' : 'ACTIVE 🟢') : 'PAUSED 🔴';
                     statusVal.style.color = autoData.enabled ? 'var(--color-squirrel)' : 'var(--color-not-squirrel)';
                 }
                 if (statusSub) {
-                    statusSub.innerText = autoData.enabled ? 'Repeller ready to blast' : 'Manual overrides only';
+                    statusSub.innerText = autoData.enabled ? (autoData.spray_mode === 'confirm' ? 'Will ask before spraying' : 'Repeller ready to blast') : 'Manual overrides only';
                 }
 
                 const blastsRes = await fetch('/api/blasts');
@@ -3247,6 +3473,7 @@ HTML_TEMPLATE = """
 
                 renderBlastsChart(blastsData.blasts, blastsData.missed_squirrels || []);
                 await updateHealthPanel();
+                await refreshPendingSpray();
                 refreshDashboardSnapshot();
             } catch (e) {
                 console.error("Error updating dashboard data:", e);
@@ -3266,7 +3493,7 @@ HTML_TEMPLATE = """
             for (let i = 6; i >= 0; i--) {
                 const d = new Date();
                 d.setDate(d.getDate() - i);
-                
+
                 const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                 days.push(label);
 
@@ -3396,7 +3623,7 @@ HTML_TEMPLATE = """
                     <h2 style="font-weight: 600; font-size: 1.25rem;">General Settings ⚙️</h2>
                     <span id="settings-save-badge" style="display: none; font-size: 0.85rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: 20px; background-color: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">Saved successfully!</span>
                 </div>
-                
+
                 <div style="width: 100%; max-width: 600px; display: flex; flex-direction: column; gap: 1.25rem;">
                     <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                         <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Analysis Interval (seconds)</label>
@@ -3626,6 +3853,20 @@ HTML_TEMPLATE = """
                         <span style="font-size: 0.75rem; color: var(--text-secondary);">Model probability threshold (0.50 - 0.99) for a qualifying squirrel detection. Default: 0.70.</span>
                     </div>
 
+                    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;">
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Spray Mode</label>
+                            <select id="settings-spray-mode" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
+                                <option value="auto">Auto Spray</option>
+                                <option value="confirm">Ask Before Spraying</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                            <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Confirmation Timeout</label>
+                            <input type="number" id="settings-confirm-timeout" min="15" max="900" step="15" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
+                        </div>
+                    </div>
+
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Spray Decision Gate</h3>
                         <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;">
@@ -3713,7 +3954,7 @@ HTML_TEMPLATE = """
                             <input type="checkbox" id="settings-enable-rtsp" style="width: 1.2rem; height: 1.2rem; cursor: pointer;">
                             <label for="settings-enable-rtsp" style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary); cursor: pointer;">Enable RTSP Streaming Backend</label>
                         </div>
-                        
+
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">RTSP Stream URL</label>
                             <input type="text" id="settings-rtsp-url" placeholder="rtsp://pi3:8554/live" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
@@ -3730,7 +3971,7 @@ HTML_TEMPLATE = """
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Notification Settings Alert 🔔</h3>
-                        
+
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Notification Channel</label>
                             <select id="settings-notif-type" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
@@ -3763,7 +4004,7 @@ HTML_TEMPLATE = """
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Storage Retention Settings 🧹</h3>
-                        
+
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Raw Queue Image Retention (days)</label>
                             <input type="number" id="settings-retention-raw" min="0.1" max="90" step="0.1" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem;">
@@ -3797,7 +4038,7 @@ HTML_TEMPLATE = """
 
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1.25rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: -0.25rem;">Inference Model Settings 🧠</h3>
-                        
+
                         <div style="display: flex; flex-direction: column; gap: 0.4rem;">
                             <label style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">Active Detection Model</label>
                             <select id="settings-active-model" style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; color: white; font-family: Outfit; font-size: 0.95rem; cursor: pointer;">
@@ -3825,7 +4066,7 @@ HTML_TEMPLATE = """
                             <span style="font-size: 0.75rem; color: var(--text-secondary);">Copies the active root model.pth checkpoint to a named file (saved in data/models/).</span>
                         </div>
                     </div>
-                    
+
                     <div style="border-top: 1px solid var(--border-color); padding-top: 1.25rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 1rem;">
                         <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-primary);">Model Accuracy Tracker 📊</h3>
                         <div style="overflow-x: auto; width: 100%; border: 1px solid var(--border-color); border-radius: 12px; background: rgba(15, 23, 42, 0.4);">
@@ -3862,7 +4103,7 @@ HTML_TEMPLATE = """
         function renderAccuraciesTable(accuracies) {
             const tbody = document.getElementById('accuracies-table-body');
             if (!tbody) return;
-            
+
             if (!accuracies || Object.keys(accuracies).length === 0) {
                 tbody.innerHTML = `
                     <tr>
@@ -3871,12 +4112,12 @@ HTML_TEMPLATE = """
                 `;
                 return;
             }
-            
+
             tbody.innerHTML = '';
             for (const [modelName, stats] of Object.entries(accuracies)) {
                 const tr = document.createElement('tr');
                 tr.style.borderBottom = '1px solid var(--border-color)';
-                
+
                 const rateText = stats.accuracy_rate !== null ? stats.accuracy_rate + '%' : 'N/A';
                 let badgeColor = 'var(--text-secondary)';
                 if (stats.accuracy_rate !== null) {
@@ -3884,7 +4125,7 @@ HTML_TEMPLATE = """
                     else if (stats.accuracy_rate >= 60) badgeColor = '#f59e0b';
                     else badgeColor = '#f87171';
                 }
-                
+
                 tr.innerHTML = `
                     <td style="padding: 0.75rem 1rem; font-family: monospace; font-size: 0.85rem; color: var(--text-primary); word-break: break-all;">${modelName}</td>
                     <td style="padding: 0.75rem 1rem; text-align: center; color: var(--text-primary);">${stats.total}</td>
@@ -3904,7 +4145,7 @@ HTML_TEMPLATE = """
                 alert("Please enter a name for the checkpoint.");
                 return;
             }
-            
+
             try {
                 const res = await fetch('/api/settings/save_model', {
                     method: 'POST',
@@ -4042,6 +4283,8 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-camera-sharpness').value = data.settings.camera_sharpness ?? 1.0;
                     document.getElementById('settings-camera-tuning-enabled').checked = data.settings.camera_tuning_enabled === true;
                     document.getElementById('settings-confidence').value = data.settings.confidence_threshold;
+                    document.getElementById('settings-spray-mode').value = data.settings.spray_mode || 'auto';
+                    document.getElementById('settings-confirm-timeout').value = data.settings.spray_confirmation_timeout_seconds || 180;
                     document.getElementById('settings-decision-hits').value = data.settings.spray_decision_required_hits ?? 2;
                     document.getElementById('settings-decision-window').value = data.settings.spray_decision_window_seconds ?? 12;
                     document.getElementById('settings-decision-average').value = data.settings.spray_decision_average_confidence ?? 0.75;
@@ -4062,7 +4305,7 @@ HTML_TEMPLATE = """
                     document.getElementById('settings-email-to').value = data.settings.email_to || '';
                     document.getElementById('settings-pi-inference-enabled').checked = data.settings.pi_inference_enabled === true;
                     document.getElementById('settings-pi-inference-shadow').checked = data.settings.pi_inference_shadow_mode !== false;
-                    
+
                     document.getElementById('settings-advanced-camera-sources').checked = data.settings.advanced_camera_sources_enabled === true;
                     document.getElementById('settings-camera-source').value = data.settings.camera_source || 'pi';
                     document.getElementById('settings-snapshot-url').value = data.settings.snapshot_url || 'http://camera.local/snapshot.jpg';
@@ -4151,6 +4394,8 @@ HTML_TEMPLATE = """
             const camera_sharpness = parseFloat(document.getElementById('settings-camera-sharpness').value);
             const camera_tuning_enabled = document.getElementById('settings-camera-tuning-enabled').checked;
             const confidence_threshold = parseFloat(document.getElementById('settings-confidence').value);
+            const spray_mode = document.getElementById('settings-spray-mode').value;
+            const spray_confirmation_timeout_seconds = parseInt(document.getElementById('settings-confirm-timeout').value);
             const spray_decision_required_hits = parseInt(document.getElementById('settings-decision-hits').value);
             const spray_decision_window_seconds = parseInt(document.getElementById('settings-decision-window').value);
             const spray_decision_average_confidence = parseFloat(document.getElementById('settings-decision-average').value);
@@ -4172,7 +4417,7 @@ HTML_TEMPLATE = """
             const pi_inference_enabled = document.getElementById('settings-pi-inference-enabled').checked;
             const pi_inference_shadow_mode = document.getElementById('settings-pi-inference-shadow').checked;
             const active_model = document.getElementById('settings-active-model') ? document.getElementById('settings-active-model').value : '';
-            
+
             const advanced_camera_sources_enabled = document.getElementById('settings-advanced-camera-sources').checked;
             const camera_source = advanced_camera_sources_enabled ? document.getElementById('settings-camera-source').value : 'pi';
             const snapshot_url = document.getElementById('settings-snapshot-url').value;
@@ -4221,6 +4466,8 @@ HTML_TEMPLATE = """
                         camera_sharpness,
                         camera_tuning_enabled,
                         confidence_threshold,
+                        spray_mode,
+                        spray_confirmation_timeout_seconds,
                         spray_decision_required_hits,
                         spray_decision_window_seconds,
                         spray_decision_average_confidence,
@@ -4256,7 +4503,7 @@ HTML_TEMPLATE = """
                     setTimeout(() => {
                         badge.style.display = 'none';
                     }, 4000);
-                    
+
                     if (data.available_models) {
                         const activeModelSelect = document.getElementById('settings-active-model');
                         if (activeModelSelect) {
@@ -4299,11 +4546,11 @@ HTML_TEMPLATE = """
                     <h2 style="font-weight: 600; font-size: 1.25rem;">Train Model 🧠</h2>
                     <span id="train-status-badge" style="font-size: 0.85rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: 20px; background-color: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid var(--border-color);">Status: Checking...</span>
                 </div>
-                
+
                 <div style="background: rgba(2, 6, 23, 0.4); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 16px; margin-bottom: 1.5rem; backdrop-filter: blur(10px);">
                     <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);">Finetune ResNet-18 Classifier</h3>
                     <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1.25rem; line-height: 1.5;">
-                        This will retrain the AI model locally using all categorized images inside the squirrel and not_squirrel dataset folders. 
+                        This will retrain the AI model locally using all categorized images inside the squirrel and not_squirrel dataset folders.
                         The training runs in the background and will automatically reload the new weights upon successful completion.
                     </p>
                     <button id="start-train-btn" class="btn" style="background-color: var(--color-sync); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);" onclick="startTraining()">
@@ -4320,10 +4567,10 @@ HTML_TEMPLATE = """
                     <pre id="train-logs" style="flex-grow: 1; overflow-y: auto; background-color: #020617; border: 1px solid var(--border-color); padding: 1rem; border-radius: 12px; font-family: monospace; font-size: 0.85rem; color: #a7f3d0; white-space: pre-wrap; line-height: 1.4;"></pre>
                 </div>
             `;
-            
+
             // Check status immediately
             checkTrainStatus();
-            
+
             // Start polling if not already polling
             if (!trainPollingInterval) {
                 trainPollingInterval = setInterval(checkTrainStatus, 1000);
@@ -4334,16 +4581,16 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/train/status');
                 const data = await res.json();
-                
+
                 isTrainingRunning = data.running;
-                
+
                 // Update badge
                 const badge = document.getElementById('train-status-badge');
                 const btn = document.getElementById('start-train-btn');
                 const btnText = document.getElementById('train-btn-text');
                 const spinner = document.getElementById('train-spinner');
                 const logsPre = document.getElementById('train-logs');
-                
+
                 if (badge) {
                     if (data.running) {
                         badge.innerText = 'Status: Training... ⚙️';
@@ -4367,7 +4614,7 @@ HTML_TEMPLATE = """
                         badge.style.borderColor = 'var(--border-color)';
                     }
                 }
-                
+
                 if (btn && btnText && spinner) {
                     if (data.running) {
                         btn.disabled = true;
@@ -4383,19 +4630,19 @@ HTML_TEMPLATE = """
                         spinner.style.display = 'none';
                     }
                 }
-                
+
                 // Update logs
                 if (logsPre && viewMode === 'train') {
                     // Detect if user was scrolled to bottom
                     const wasScrolledToBottom = logsPre.scrollHeight - logsPre.clientHeight <= logsPre.scrollTop + 20;
-                    
+
                     logsPre.innerText = data.logs || 'No log output yet.';
-                    
+
                     if (wasScrolledToBottom) {
                         logsPre.scrollTop = logsPre.scrollHeight;
                     }
                 }
-                
+
                 // Clear interval if training stops and we are not in train tab
                 if (!data.running && viewMode !== 'train' && trainPollingInterval) {
                     clearInterval(trainPollingInterval);
@@ -4455,11 +4702,11 @@ HTML_TEMPLATE = """
                     document.getElementById('stat-raw').innerText = data.stats.raw_count;
                     document.getElementById('stat-squirrel').innerText = data.stats.squirrel_count;
                     document.getElementById('stat-not-squirrel').innerText = data.stats.not_squirrel_count;
-                    
+
                     updateUndoButtonState(data.has_history);
-                    
+
                     const isModalOpen = document.getElementById('image-modal').classList.contains('show');
-                    
+
                     if (viewMode === 'queue') {
                         // Pass true to specify we want to display the undone image as the active image
                         await loadNext(data.undone_image, null, true);
@@ -4495,15 +4742,15 @@ HTML_TEMPLATE = """
                         </button>
                     </div>
                 </div>
-                
+
                 <div style="display: flex; flex-direction: column; gap: 0.5rem; flex-grow: 1; height: 500px; min-height: 350px;">
                     <pre id="classifier-logs" style="flex-grow: 1; overflow-y: auto; background-color: #020617; border: 1px solid var(--border-color); padding: 1rem; border-radius: 12px; font-family: monospace; font-size: 0.85rem; color: #a7f3d0; white-space: pre-wrap; line-height: 1.4;"></pre>
                 </div>
             `;
-            
+
             // Fetch logs immediately
             fetchClassifierLogs();
-            
+
             // Start polling if not already polling
             if (!logsPollingInterval) {
                 logsPollingInterval = setInterval(fetchClassifierLogs, 3000);
@@ -4516,12 +4763,12 @@ HTML_TEMPLATE = """
             try {
                 const res = await fetch('/api/logs');
                 const data = await res.json();
-                
+
                 // Detect if user was scrolled to bottom
                 const wasScrolledToBottom = logsPre.scrollHeight - logsPre.clientHeight <= logsPre.scrollTop + 20;
-                
+
                 logsPre.innerText = data.logs || 'No classifier log output yet.';
-                
+
                 if (wasScrolledToBottom) {
                     logsPre.scrollTop = logsPre.scrollHeight;
                 }
@@ -4577,24 +4824,24 @@ HTML_TEMPLATE = """
                         url += `&show_current=true`;
                     }
                 }
-                
+
                 const res = await fetch(url);
                 const data = await res.json();
-                
+
                 // Update stats
                 document.getElementById('stat-raw').innerText = data.stats.raw_count;
                 document.getElementById('stat-squirrel').innerText = data.stats.squirrel_count;
                 document.getElementById('stat-not-squirrel').innerText = data.stats.not_squirrel_count;
                 updateUndoButtonState(data.has_history);
-                
+
                 const workspace = document.getElementById('workspace-card');
-                
+
                 if (data.image) {
                     currentImage = data.image;
                     currentImageConfidence = data.confidence;
                     currentIndex = data.index;
                     totalCount = data.total;
-                    
+
                     workspace.innerHTML = `
                         <div class="image-container" id="img-container">
                             <img src="/image/${data.image}" alt="Feeder image">
@@ -4603,7 +4850,7 @@ HTML_TEMPLATE = """
                             ${data.image}
                         </div>
                         ${confidenceBadge(currentImageConfidence)}
-                        
+
                         <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 0.75rem;">
                             <button class="btn" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="navigatePage(-1)" ${currentIndex === 0 ? 'disabled' : ''}>&lt; Prev</button>
                             <span style="font-size: 0.9rem; color: var(--text-secondary); font-weight: 600;">
@@ -4636,21 +4883,21 @@ HTML_TEMPLATE = """
                 let url = `/api/list_images?mode=${viewMode}&page=${currentPage}&reverse=${reverseOrder}&per_page=12`;
                 const res = await fetch(url);
                 const data = await res.json();
-                
+
                 // Update stats
                 document.getElementById('stat-raw').innerText = data.stats.raw_count;
                 document.getElementById('stat-squirrel').innerText = data.stats.squirrel_count;
                 document.getElementById('stat-not-squirrel').innerText = data.stats.not_squirrel_count;
                 updateUndoButtonState(data.has_history);
-                
+
                 currentPage = data.page;
                 totalPages = data.total_pages;
                 galleryImages = data.images;
                 galleryImageMeta = data.image_meta || {};
                 galleryTotalCount = data.total_images;
-                
+
                 const workspace = document.getElementById('workspace-card');
-                
+
                 if (galleryImages.length > 0) {
                     let cardsHtml = '';
                     galleryImages.forEach((img, idx) => {
@@ -4666,7 +4913,7 @@ HTML_TEMPLATE = """
                                 <button class="action-icon-btn btn-delete-quick" onclick="event.stopPropagation(); quickClassify('${img}', 'delete')" title="Move to Trash">🗑️</button>
                             `;
                         }
-                        
+
                         cardsHtml += `
                             <div class="gallery-card" onclick="openImageModal(${idx})">
                                 <div class="card-actions-overlay">${overlayButtons}</div>
@@ -4678,32 +4925,32 @@ HTML_TEMPLATE = """
                             </div>
                         `;
                     });
-                    
+
                     // Build page links
                     let pageLinksHtml = `
                         <button class="page-link" onclick="setPage(1)" ${currentPage === 1 ? 'disabled' : ''}>&lt;&lt;</button>
                         <button class="page-link" onclick="setPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>&lt;</button>
                     `;
-                    
+
                     let startPage = Math.max(1, currentPage - 2);
                     let endPage = Math.min(totalPages, startPage + 4);
                     if (endPage - startPage < 4) {
                         startPage = Math.max(1, endPage - 4);
                     }
-                    
+
                     for (let p = startPage; p <= endPage; p++) {
                         pageLinksHtml += `
                             <button class="page-link ${p === currentPage ? 'active' : ''}" onclick="setPage(${p})">${p}</button>
                         `;
                     }
-                    
+
                     pageLinksHtml += `
                         <button class="page-link" onclick="setPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>&gt;</button>
                         <button class="page-link" onclick="setPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''}>&gt;&gt;</button>
                     `;
-                    
+
                     let titleText = viewMode === 'squirrel' ? "Reviewed Squirrels" : "Reviewed Not Squirrels";
-                    
+
                     let topPaginationHtml = '';
                     if (totalPages > 1) {
                         topPaginationHtml = `
@@ -4712,7 +4959,7 @@ HTML_TEMPLATE = """
                             </div>
                         `;
                     }
-                    
+
                     workspace.innerHTML = `
                         <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1rem;">
                             <h2 style="font-weight: 600; font-size: 1.25rem;">${titleText}</h2>
@@ -4744,20 +4991,20 @@ HTML_TEMPLATE = """
                 let url = `/api/list_videos?reverse=${reverseOrder}`;
                 const res = await fetch(url);
                 const data = await res.json();
-                
+
                 // Update stats
                 document.getElementById('stat-raw').innerText = data.stats.raw_count;
                 document.getElementById('stat-squirrel').innerText = data.stats.squirrel_count;
                 document.getElementById('stat-not-squirrel').innerText = data.stats.not_squirrel_count;
                 updateUndoButtonState(data.has_history);
-                
+
                 const workspace = document.getElementById('workspace-card');
                 const videos = data.videos;
                 allLoadedVideos = videos || [];
                 videoClassifications = data.classifications || {};
                 videoFavorites = data.favorites || {};
                 const falseAlarmVideoCount = data.false_alarm_video_count || 0;
-                
+
                 // Extract unique dates from the videos list
                 const datesSet = new Set();
                 if (videos) {
@@ -4769,7 +5016,7 @@ HTML_TEMPLATE = """
                     });
                 }
                 const sortedDates = Array.from(datesSet).sort((a, b) => b.localeCompare(a));
-                
+
                 if (videos && videos.length > 0) {
                     let filteredVideos = videos;
                     if (showFavoritesOnly) {
@@ -4840,13 +5087,13 @@ HTML_TEMPLATE = """
                             const isAccurate = currentClassification === 'accurate';
                             const isFalsePositive = currentClassification === 'false_positive';
                             const isFav = videoFavorites[vid] || false;
-                            
+
                             cardsHtml += `
                                 <div class="gallery-card" onclick="openVideoModal('${vid}')">
                                     ${isFav ? `
-                                    <button class="action-icon-btn" 
+                                    <button class="action-icon-btn"
                                             style="position: absolute; top: 8px; left: 8px; background: rgba(245, 158, 11, 0.25); border: 1px solid #f59e0b; color: #f59e0b; border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 6; font-size: 1rem; transition: all 0.15s ease;"
-                                            onclick="event.stopPropagation(); toggleFavoriteVideo('${vid}', false)" 
+                                            onclick="event.stopPropagation(); toggleFavoriteVideo('${vid}', false)"
                                             title="Unfavorite Video">
                                         ⭐
                                     </button>
@@ -4856,8 +5103,8 @@ HTML_TEMPLATE = """
                                         <a class="action-icon-btn" href="/video/${vid}" download="${vid}" onclick="event.stopPropagation()" title="Download Video" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; font-size: 1rem; margin-right: 0.2rem;">📥</a>
                                         <button class="action-icon-btn btn-delete-quick" onclick="event.stopPropagation(); deleteVideo('${vid}')" title="Delete Video">🗑️</button>
                                     </div>
-                                    <img src="/video/${vid.replace('.mp4', '.jpg')}" 
-                                         alt="Video thumbnail" 
+                                    <img src="/video/${vid.replace('.mp4', '.jpg')}"
+                                         alt="Video thumbnail"
                                          style="width: 100%; height: 150px; object-fit: cover; border-bottom: 1px solid var(--border-color);"
                                          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                                     <div style="display: none; height: 150px; background: #020617; align-items: center; justify-content: center; font-size: 3rem; border-bottom: 1px solid var(--border-color);">
@@ -4865,12 +5112,12 @@ HTML_TEMPLATE = """
                                     </div>
                                     <div class="gallery-card-info" style="border-bottom: none;">${vid}</div>
                                     <div style="display: flex; gap: 0.5rem; padding: 0.5rem 0.75rem 0.75rem 0.75rem; background: rgba(0, 0, 0, 0.2); border-top: 1px solid rgba(255,255,255,0.05);" onclick="event.stopPropagation()">
-                                        <button class="btn btn-classify-video accurate-btn ${isAccurate ? 'active' : ''}" 
+                                        <button class="btn btn-classify-video accurate-btn ${isAccurate ? 'active' : ''}"
                                                 style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isAccurate ? 'var(--color-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isAccurate ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}; color: ${isAccurate ? 'var(--color-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
                                                 onclick="classifyVideo('${vid}', '${isAccurate ? '' : 'accurate'}')">
                                             Accurate 🐿️
                                         </button>
-                                        <button class="btn btn-classify-video false-positive-btn ${isFalsePositive ? 'active' : ''}" 
+                                        <button class="btn btn-classify-video false-positive-btn ${isFalsePositive ? 'active' : ''}"
                                                 style="flex: 1; padding: 0.35rem; font-size: 0.75rem; font-weight: 600; border-radius: 6px; border: 1px solid ${isFalsePositive ? 'var(--color-not-squirrel)' : 'rgba(255,255,255,0.1)'}; background-color: ${isFalsePositive ? 'rgba(239, 68, 68, 0.2)' : 'transparent'}; color: ${isFalsePositive ? 'var(--color-not-squirrel)' : 'var(--text-secondary)'}; cursor: pointer; transition: all 0.15s ease;"
                                                 onclick="classifyVideo('${vid}', '${isFalsePositive ? '' : 'false_positive'}')">
                                             False Pos ❌
@@ -4885,24 +5132,24 @@ HTML_TEMPLATE = """
                             <button class="page-link" onclick="setVideoPage(1)" ${videoCurrentPage === 1 ? 'disabled' : ''}>&lt;&lt;</button>
                             <button class="page-link" onclick="setVideoPage(${videoCurrentPage - 1})" ${videoCurrentPage === 1 ? 'disabled' : ''}>&lt;</button>
                         `;
-                        
+
                         let startPage = Math.max(1, videoCurrentPage - 2);
                         let endPage = Math.min(videoTotalPages, startPage + 4);
                         if (endPage - startPage < 4) {
                             startPage = Math.max(1, endPage - 4);
                         }
-                        
+
                         for (let p = startPage; p <= endPage; p++) {
                             pageLinksHtml += `
                                 <button class="page-link ${p === videoCurrentPage ? 'active' : ''}" onclick="setVideoPage(${p})">${p}</button>
                             `;
                         }
-                        
+
                         pageLinksHtml += `
                             <button class="page-link" onclick="setVideoPage(${videoCurrentPage + 1})" ${videoCurrentPage === videoTotalPages ? 'disabled' : ''}>&gt;</button>
                             <button class="page-link" onclick="setVideoPage(${videoTotalPages})" ${videoCurrentPage === videoTotalPages ? 'disabled' : ''}>&gt;&gt;</button>
                         `;
-                        
+
                         let topPaginationHtml = '';
                         if (videoTotalPages > 1) {
                             topPaginationHtml = `
@@ -5054,7 +5301,7 @@ HTML_TEMPLATE = """
                 ${confidenceBadge(meta.confidence)}
             `;
             document.getElementById('modal-image-counter').innerText = `Image ${(currentPage - 1) * 12 + modalIndex + 1} of ${galleryTotalCount}`;
-            
+
             document.getElementById('modal-prev-btn').disabled = (currentPage === 1 && modalIndex === 0);
             document.getElementById('modal-next-btn').disabled = (currentPage === totalPages && modalIndex === galleryImages.length - 1);
         }
@@ -5080,7 +5327,7 @@ HTML_TEMPLATE = """
         async function classifyModal(category) {
             if (modalIndex < 0 || modalIndex >= galleryImages.length) return;
             const img = galleryImages[modalIndex];
-            
+
             const container = document.getElementById('modal-img-container');
             if (container) {
                 container.className = `image-container flash-${category.replace('_', '-')}`;
@@ -5094,10 +5341,10 @@ HTML_TEMPLATE = """
                 });
                 const data = await res.json();
                 updateUndoButtonState(data.has_history);
-                
+
                 // Remove item from frontend list
                 galleryImages.splice(modalIndex, 1);
-                
+
                 setTimeout(() => {
                     if (container) {
                         container.className = `image-container`;
@@ -5127,7 +5374,7 @@ HTML_TEMPLATE = """
         function updateModalVideoClassifications(filename) {
             const container = document.getElementById('modal-video-classification-actions');
             if (!container) return;
-            
+
             if (filename.startsWith('compilation_')) {
                 container.innerHTML = `
                     <button class="btn" onclick="shareVideo('${filename}')">
@@ -5139,14 +5386,14 @@ HTML_TEMPLATE = """
                 `;
                 return;
             }
-            
+
             const currentClassification = videoClassifications[filename] || null;
             const isAccurate = currentClassification === 'accurate';
             const isFalsePositive = currentClassification === 'false_positive';
             const isFav = videoFavorites[filename] || false;
-            
+
             container.innerHTML = `
-                <button class="btn ${isFav ? 'favorite-active' : ''}" 
+                <button class="btn ${isFav ? 'favorite-active' : ''}"
                         onclick="toggleFavoriteVideoModal('${filename}', ${!isFav})">
                     ⭐ ${isFav ? 'Favorited' : 'Favorite'}
                 </button>
@@ -5157,11 +5404,11 @@ HTML_TEMPLATE = """
                     📥 Download
                 </a>
                 <div class="separator"></div>
-                <button class="btn ${isAccurate ? 'accurate-active' : ''}" 
+                <button class="btn ${isAccurate ? 'accurate-active' : ''}"
                         onclick="classifyVideoModal('${filename}', '${isAccurate ? '' : 'accurate'}')">
                     Accurate 🐿️
                 </button>
-                <button class="btn ${isFalsePositive ? 'false-positive-active' : ''}" 
+                <button class="btn ${isFalsePositive ? 'false-positive-active' : ''}"
                         onclick="classifyVideoModal('${filename}', '${isFalsePositive ? '' : 'false_positive'}')">
                     False Positive ❌
                 </button>
@@ -5248,11 +5495,11 @@ HTML_TEMPLATE = """
             player.pause();
             player.src = "";
             player.loop = true; // Restore loop default
-            
+
             // Hide compilation HUD elements
             const compHeader = document.getElementById('compilation-header');
             if (compHeader) compHeader.style.display = 'none';
-            
+
             document.getElementById('video-modal').classList.remove('show');
         }
 
@@ -5304,16 +5551,16 @@ HTML_TEMPLATE = """
                 alert("Please select a date from the dropdown first! 🍿");
                 return;
             }
-            
+
             const btn = document.querySelector('button[onclick="startCompilationPlaylist()"]');
             const originalText = btn.innerHTML;
             btn.disabled = true;
             btn.innerHTML = "Stitching... 🍿";
-            
+
             try {
                 const res = await fetch(`/api/compilation/${selectedDate}`);
                 const data = await res.json();
-                
+
                 if (data.status === 'success') {
                     playCompilationVideo(data.filename, selectedDate);
                 } else {
@@ -5332,17 +5579,17 @@ HTML_TEMPLATE = """
             const player = document.getElementById('modal-video-element');
             player.src = `/video/${filename}?t=${Date.now()}`;
             player.loop = false; // Compilations don't loop by default
-            
+
             document.getElementById('modal-video-filename').innerText = filename;
             updateModalVideoClassifications(filename);
-            
+
             // Update HUD text
             const compHeader = document.getElementById('compilation-header');
             if (compHeader) {
                 document.getElementById('compilation-header-info').innerText = `Daily Stitched Video - ${formatDateString(selectedDate)}`;
                 compHeader.style.display = 'flex';
             }
-            
+
             document.getElementById('video-modal').classList.add('show');
         }
 
@@ -5350,11 +5597,11 @@ HTML_TEMPLATE = """
             const btn = document.getElementById('spray-btn');
             const text = document.getElementById('spray-text');
             const spinner = document.getElementById('spray-spinner');
-            
+
             const modalBtn = document.getElementById('modal-spray-btn');
             const modalText = document.getElementById('modal-spray-text');
             const modalSpinner = document.getElementById('modal-spray-spinner');
-            
+
             if (btn) {
                 btn.disabled = true;
                 if (spinner) spinner.style.display = 'inline-block';
@@ -5365,7 +5612,7 @@ HTML_TEMPLATE = """
                 if (modalSpinner) modalSpinner.style.display = 'inline-block';
                 if (modalText) modalText.innerText = 'Spraying...';
             }
-            
+
             try {
                 const res = await fetch('/api/spray', { method: 'POST' });
                 const data = await res.json();
@@ -5379,7 +5626,7 @@ HTML_TEMPLATE = """
                 if (spinner) spinner.style.display = 'none';
                 if (text) text.innerText = 'Spray 💦';
                 if (btn) btn.disabled = false;
-                
+
                 if (modalSpinner) modalSpinner.style.display = 'none';
                 if (modalText) modalText.innerText = 'Spray 💦';
                 if (modalBtn) modalBtn.disabled = false;
@@ -5410,7 +5657,7 @@ HTML_TEMPLATE = """
                 triggerSpray();
                 return;
             }
-            
+
             // Modal image shortcuts
             if (document.getElementById('image-modal').classList.contains('show')) {
                 if (e.key === 'ArrowLeft') {
@@ -5453,10 +5700,10 @@ HTML_TEMPLATE = """
             const btn = document.getElementById('sync-btn');
             btn.classList.add('syncing');
             btn.disabled = true;
-            
+
             try {
                 const useGemini = document.getElementById('gemini-toggle').checked;
-                const res = await fetch('/api/sync', { 
+                const res = await fetch('/api/sync', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ auto_label: useGemini })
@@ -5485,18 +5732,18 @@ HTML_TEMPLATE = """
                     return;
                 }
                 const useGemini = document.getElementById('gemini-toggle').checked;
-                const res = await fetch('/api/sync', { 
+                const res = await fetch('/api/sync', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ auto_label: useGemini })
                 });
                 const data = await res.json();
-                
+
                 if (data.stats) {
                     document.getElementById('stat-raw').innerText = data.stats.raw_count;
                     document.getElementById('stat-squirrel').innerText = data.stats.squirrel_count;
                     document.getElementById('stat-not-squirrel').innerText = data.stats.not_squirrel_count;
-                    
+
                     if (viewMode === 'dashboard') {
                         updateDashboardData();
                     } else if (viewMode === 'queue' && !currentImage && data.stats.raw_count > 0) {
@@ -5510,10 +5757,16 @@ HTML_TEMPLATE = """
 
         // Setup ended listener (restores defaults if needed)
 
+        const initialParams = new URLSearchParams(window.location.search);
+        if (initialParams.has('confirm')) {
+            viewMode = 'dashboard';
+        }
+
         setInterval(autoSync, 15000);
         setInterval(() => {
             if (viewMode === 'dashboard' && !rtspEnabled) {
                 refreshDashboardSnapshot();
+                refreshPendingSpray();
             }
         }, 5000);
         loadNext();
@@ -5548,17 +5801,17 @@ def serve_thumbnail(filename):
     thumb_path = os.path.join(THUMBNAILS_DIR, filename)
     if os.path.exists(thumb_path):
         return send_from_directory(THUMBNAILS_DIR, filename)
-        
+
     original_path = None
     for d in [RAW_DIR, SQUIRREL_DIR, NOT_SQUIRREL_DIR, TRASH_DIR]:
         p = os.path.join(d, filename)
         if os.path.exists(p):
             original_path = p
             break
-            
+
     if not original_path:
         return "Original image not found", 404
-        
+
     try:
         from PIL import Image
         with Image.open(original_path) as img:
@@ -5579,14 +5832,14 @@ def next_image():
     reverse = request.args.get('reverse', 'false') == 'true'
     index_str = request.args.get('index', '')
     show_current = request.args.get('show_current', 'false') == 'true'
-    
+
     category_map = {
         'squirrel': 'squirrel',
         'not_squirrel': 'not_squirrel',
         'queue': 'raw'
     }
     db_category = category_map.get(mode, 'raw')
-    
+
     try:
         query = db_session.query(DBImage).filter_by(category=db_category)
         if reverse:
@@ -5605,11 +5858,11 @@ def next_image():
         print("Error getting images for next_image:", e)
         files = []
         image_meta = {}
-        
+
     image = None
     current_idx = 0
     total = len(files)
-    
+
     if total > 0:
         if index_str.isdigit():
             idx = int(index_str)
@@ -5630,7 +5883,7 @@ def next_image():
         else:
             image = files[0]
             current_idx = 0
-            
+
     return jsonify({
         'image': image,
         'confidence': image_meta.get(image, {}).get('confidence') if image else None,
@@ -5652,29 +5905,29 @@ def list_images():
         per_page = int(request.args.get('per_page', 12))
     except ValueError:
         per_page = 12
-        
+
     category_map = {
         'squirrel': 'squirrel',
         'not_squirrel': 'not_squirrel',
         'queue': 'raw'
     }
     db_category = category_map.get(mode, 'raw')
-    
+
     try:
         query = db_session.query(DBImage).filter_by(category=db_category)
         if reverse:
             query = query.order_by(DBImage.filename.desc())
         else:
             query = query.order_by(DBImage.filename.asc())
-            
+
         total_images = query.count()
         total_pages = (total_images + per_page - 1) // per_page if total_images > 0 else 1
-        
+
         if page < 1:
             page = 1
         elif page > total_pages:
             page = total_pages
-            
+
         offset = (page - 1) * per_page
         page_imgs = query.offset(offset).limit(per_page).all()
         page_files = [img.filename for img in page_imgs]
@@ -5690,7 +5943,7 @@ def list_images():
         image_meta = {}
         total_images = 0
         total_pages = 1
-        
+
     return jsonify({
         'images': page_files,
         'image_meta': image_meta,
@@ -5705,7 +5958,7 @@ def list_images():
 @app.route('/api/list_videos')
 def list_videos():
     reverse = request.args.get('reverse', 'false') == 'true'
-    
+
     try:
         query = db_session.query(DBVideo)
         if reverse:
@@ -5716,12 +5969,12 @@ def list_videos():
     except Exception as e:
         print("Error listing videos from DB:", e)
         videos_list = []
-        
+
     videos = []
     classifications = {}
     favorites = {}
     false_alarm_video_count = 0
-    
+
     for v in videos_list:
         video_path = os.path.join(VIDEOS_DIR, v.filename)
         if not os.path.exists(video_path):
@@ -5734,7 +5987,7 @@ def list_videos():
                 false_alarm_video_count += 1
         if v.is_favorite:
             favorites[v.filename] = True
-            
+
     return jsonify({
         'videos': videos,
         'classifications': classifications,
@@ -5783,9 +6036,9 @@ def get_daily_compilation(date_str):
     import re
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
         return jsonify({'status': 'error', 'message': 'Invalid date format (expected YYYY-MM-DD)'}), 400
-        
+
     date_clean = date_str.replace('-', '') # YYYYMMDD
-    
+
     # Query videos for this day whose linked spray event is not marked false positive.
     try:
         videos = db_session.query(DBVideo).filter(
@@ -5794,47 +6047,47 @@ def get_daily_compilation(date_str):
         videos = [v for v in videos if get_video_event_classification(v) != 'false_positive']
     except Exception as e:
         return jsonify({'status': 'error', 'message': 'Database query error: ' + str(e)}), 500
-        
+
     if not videos:
         return jsonify({'status': 'error', 'message': 'No videos found for this date.'}), 404
-        
+
     # Sort chronologically (ascending)
     videos.sort(key=lambda v: v.filename)
-    
+
     output_filename = 'compilation_{0}.mp4'.format(date_clean)
     output_path = os.path.join(VIDEOS_DIR, output_filename)
-    
+
     input_paths = [os.path.join(VIDEOS_DIR, v.filename) for v in videos if os.path.exists(os.path.join(VIDEOS_DIR, v.filename))]
     if not input_paths:
         return jsonify({'status': 'error', 'message': 'No physical video files found on disk.'}), 404
-        
+
     needs_rebuild = True
     if os.path.exists(output_path):
         out_mtime = os.path.getmtime(output_path)
         # Rebuild if any source file is newer than output
         if all(os.path.getmtime(ip) < out_mtime for ip in input_paths):
             needs_rebuild = False
-            
+
     if needs_rebuild:
         import tempfile
         import subprocess
-        
+
         try:
             settings = load_settings()
             ffmpeg_path = settings.get('ffmpeg_path') or shutil.which('ffmpeg') or 'ffmpeg'
-            
+
             # Check if drawtext filter is available in the compiled FFmpeg binary
             drawtext_supported = check_drawtext_support(ffmpeg_path)
             font_path = find_available_font() if drawtext_supported else None
             retro_font_path = find_retro_font() if drawtext_supported else None
-            
+
             temp_output_path = output_path + '.tmp'
-            
+
             if drawtext_supported:
                 # Build filter complex for watermarks + concat
                 filter_parts = []
                 videos_to_stitch = [v.filename for v in videos if os.path.exists(os.path.join(VIDEOS_DIR, v.filename))]
-                
+
                 for idx, filename in enumerate(videos_to_stitch):
                     # Parse date/time from vid_YYYYMMDD_HHMMSS.mp4
                     match = re.match(r'vid_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\.mp4', filename)
@@ -5845,40 +6098,40 @@ def get_daily_compilation(date_str):
                         watermark_text = "{0} {1}".format(date_str, time_str)
                     else:
                         watermark_text = filename
-                        
+
                     # Video game high score style blast counter (e.g. BLAST: 01)
                     score_text = "BLAST: {0:02d}".format(idx + 1)
-                    
+
                     # Escape special characters for ffmpeg filter parsing
                     escaped_text = watermark_text.replace("'", "'\\''").replace(":", "\\:")
                     escaped_score = score_text.replace("'", "'\\''").replace(":", "\\:")
-                    
+
                     # Bottom-left Date/Time overlay
                     if font_path:
                         escaped_font = font_path.replace(":", "\\:").replace("'", "'\\''")
                         left_filter = "drawtext=text='{0}':fontfile='{1}':fontsize=20:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=6:x=20:y=h-36".format(escaped_text, escaped_font)
                     else:
                         left_filter = "drawtext=text='{0}':fontsize=20:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=6:x=20:y=h-36".format(escaped_text)
-                        
+
                     # Top-right Arcade Blast Counter overlay
                     if retro_font_path:
                         escaped_retro = retro_font_path.replace(":", "\\:").replace("'", "'\\''")
                         right_filter = "drawtext=text='{0}':fontfile='{1}':fontsize=36:fontcolor=0xFACC15:borderw=3:bordercolor=black:x=w-tw-20:y=20".format(escaped_score, escaped_retro)
                     else:
                         right_filter = "drawtext=text='{0}':fontsize=36:fontcolor=0xFACC15:borderw=3:bordercolor=black:x=w-tw-20:y=20".format(escaped_score)
-                        
+
                     # Chain the left and right overlays together
                     filter_parts.append("[{0:d}:v]{1}, {2}[v{0:d}]".format(idx, left_filter, right_filter))
-                
+
                 if len(videos_to_stitch) > 1:
                     concat_inputs = "".join(["[v{0}]".format(i) for i in range(len(videos_to_stitch))])
                     filter_parts.append("{0}concat=n={1}:v=1:a=0[outv]".format(concat_inputs, len(videos_to_stitch)))
                     map_output = "[outv]"
                 else:
                     map_output = "[v0]"
-                    
+
                 filter_complex_str = "; ".join(filter_parts)
-                
+
                 cmd = [ffmpeg_path, '-y']
                 for filename in videos_to_stitch:
                     cmd.extend(['-i', os.path.join(VIDEOS_DIR, filename)])
@@ -5891,9 +6144,9 @@ def get_daily_compilation(date_str):
                     '-f', 'mp4',
                     temp_output_path
                 ])
-                
+
                 res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
+
             else:
                 # Fallback to simple demuxer concat if drawtext is not supported
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f_list:
@@ -5901,7 +6154,7 @@ def get_daily_compilation(date_str):
                         escaped_path = ip.replace("'", "'\\''")
                         f_list.write("file '{0}'\n".format(escaped_path))
                     list_filename = f_list.name
-                    
+
                 cmd = [
                     ffmpeg_path, '-y',
                     '-f', 'concat',
@@ -5913,11 +6166,11 @@ def get_daily_compilation(date_str):
                     '-f', 'mp4',
                     temp_output_path
                 ]
-                
+
                 res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 if os.path.exists(list_filename):
                     os.remove(list_filename)
-                
+
             if res.returncode != 0:
                 if os.path.exists(temp_output_path):
                     try:
@@ -5927,7 +6180,7 @@ def get_daily_compilation(date_str):
                 error_msg = res.stderr.decode('utf-8', errors='ignore')
                 log_message("[Compilation] FFmpeg error: {0}".format(error_msg))
                 return jsonify({'status': 'error', 'message': 'FFmpeg concatenation failed: ' + error_msg}), 500
-                
+
             os.rename(temp_output_path, output_path)
             log_message("[Compilation] Stitched video created: {0}".format(output_filename))
         except Exception as e:
@@ -5937,7 +6190,7 @@ def get_daily_compilation(date_str):
                 except Exception:
                     pass
             return jsonify({'status': 'error', 'message': 'Error creating compilation: ' + str(e)}), 500
-            
+
     return jsonify({
         'status': 'success',
         'url': '/video/{0}'.format(output_filename),
@@ -5950,7 +6203,7 @@ def delete_video():
     filename = data.get('filename')
     if not filename:
         return jsonify({'status': 'error', 'message': 'Missing filename'}), 400
-        
+
     try:
         db_video = db_session.query(DBVideo).filter_by(filename=filename).first()
         false_alarm_training = None
@@ -5967,7 +6220,7 @@ def delete_video():
             })
     except Exception as e:
         return jsonify({'status': 'error', 'message': 'Failed to delete video file: ' + str(e)}), 500
-        
+
     return jsonify({'status': 'error', 'message': 'Video not found'}), 404
 
 @app.route('/api/delete_false_alarm_videos', methods=['POST'])
@@ -6012,13 +6265,13 @@ def classify_video():
     data = request.get_json() or {}
     video_name = data.get('video_name')
     classification = data.get('classification') # 'accurate', 'false_positive', or null
-    
+
     if not video_name:
         return jsonify({'status': 'error', 'message': 'Missing video_name'}), 400
-        
+
     if classification not in [None, 'accurate', 'false_positive']:
         return jsonify({'status': 'error', 'message': 'Invalid classification'}), 400
-        
+
     try:
         db_vid = db_session.query(DBVideo).filter_by(filename=video_name).first()
         if db_vid:
@@ -6059,10 +6312,10 @@ def favorite_video():
     data = request.get_json() or {}
     video_name = data.get('video_name')
     favorite = data.get('favorite', False) # True or False
-    
+
     if not video_name:
         return jsonify({'status': 'error', 'message': 'Missing video_name'}), 400
-        
+
     try:
         db_vid = db_session.query(DBVideo).filter_by(filename=video_name).first()
         if db_vid:
@@ -6105,7 +6358,7 @@ def get_model_accuracies():
     except Exception as e:
         print("Error querying blasts for model accuracies:", e)
         results = []
-        
+
     model_accuracies = {}
     for b in results:
         model_key = b.model_name or 'unknown'
@@ -6122,11 +6375,11 @@ def get_model_accuracies():
                 model_accuracies[model_key]['accurate'] += 1
             elif b.classification == 'false_positive':
                 model_accuracies[model_key]['false_positive'] += 1
-                
+
     for model_key, stats in model_accuracies.items():
         total_classified = stats['accurate'] + stats['false_positive']
         stats['accuracy_rate'] = round((stats['accurate'] / total_classified) * 100, 1) if total_classified > 0 else None
-        
+
     return model_accuracies
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -6147,12 +6400,12 @@ def api_settings():
                     else:
                         settings[k] = data[k]
             save_settings(settings)
-            
+
             # If active model changed, load the new active model
             new_model = settings.get('active_model')
             if new_model != old_model:
                 load_active_model()
-            
+
             import threading
             def run_once():
                 try:
@@ -6161,13 +6414,13 @@ def api_settings():
                     ns_min = settings.get('retention_min_not_squirrel', 1000)
                     trash_days = settings.get('retention_days_trash', 1.0)
                     vid_days = settings.get('retention_days_videos', 14.0)
-                    
+
                     log_message("[Storage Cleanup] Running settings-change cleanup...")
                     del_raw = clean_directory_by_age(RAW_DIR, raw_days)
                     del_trash = clean_directory_by_age(TRASH_DIR, trash_days)
                     del_vid = clean_videos_directory(VIDEOS_DIR, vid_days)
                     del_ns = clean_not_squirrel_directory(NOT_SQUIRREL_DIR, ns_days, ns_min)
-                    
+
                     if del_raw > 0 or del_trash > 0 or del_vid > 0 or del_ns > 0:
                         log_message("[Storage Cleanup] Done. Deleted: raw={0}, trash={1}, videos={2}, not_squirrel={3}".format(
                             del_raw, del_trash, del_vid, del_ns
@@ -6176,9 +6429,9 @@ def api_settings():
                         log_message("[Storage Cleanup] Done. No files needed pruning.")
                 except Exception as e:
                     log_message("Error in settings-change cleanup thread: {0}".format(e))
-                    
+
             threading.Thread(target=run_once).start()
-            
+
             return jsonify({
                 'status': 'success',
                 'settings': settings,
@@ -6202,25 +6455,25 @@ def save_model_checkpoint():
         name = data.get('name')
         if not name:
             return jsonify({'status': 'error', 'message': 'No name provided'}), 400
-            
+
         import re
         name_clean = name.strip()
         if name_clean.endswith('.pth'):
             name_clean = name_clean[:-4]
-            
+
         if not re.match(r'^[a-zA-Z0-9_-]+$', name_clean):
             return jsonify({'status': 'error', 'message': 'Invalid characters in name. Use alphanumeric, dashes, and underscores.'}), 400
-            
+
         src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.pth')
         if not os.path.exists(src_path):
             return jsonify({'status': 'error', 'message': 'No trained model.pth found in root directory.'}), 404
-            
+
         dst_filename = "{0}.pth".format(name_clean)
         dst_path = os.path.join(MODELS_DIR, dst_filename)
-        
+
         shutil.copy2(src_path, dst_path)
         log_message("Saved custom model checkpoint: {0}".format(dst_filename))
-        
+
         return jsonify({
             'status': 'success',
             'message': 'Checkpoint saved successfully.',
@@ -6242,13 +6495,13 @@ def get_blasts():
         blasts_query = []
         videos_by_blast_id = {}
         videos_by_filename = {}
-        
+
     blasts = []
     accurate_count = 0
     false_positive_count = 0
     auto_blasts_count = 0
     manual_blasts_count = 0
-    
+
     for b in blasts_query:
         v = videos_by_blast_id.get(b.id)
         if not v and b.video_filename:
@@ -6263,7 +6516,7 @@ def get_blasts():
             'video_filename': video_filename,
             'event_id': b.id
         }
-        
+
         if b.classification:
             blast_dict['classification'] = b.classification
             if b.classification == 'accurate':
@@ -6273,14 +6526,14 @@ def get_blasts():
         if v:
             if v.is_favorite:
                 blast_dict['favorite'] = True
-                
+
         blasts.append(blast_dict)
-        
+
         if b.type == 'auto':
             auto_blasts_count += 1
         elif b.type == 'manual':
             manual_blasts_count += 1
-            
+
     # Missed squirrels calculation:
     # Any image classified as 'squirrel' that does NOT have an associated blast within 30 seconds.
     missed_squirrels = []
@@ -6300,10 +6553,10 @@ def get_blasts():
                 })
     except Exception as e:
         print("Error calculating missed squirrels:", e)
-        
+
     total_classified = accurate_count + false_positive_count
     accuracy_rate = round((accurate_count / total_classified) * 100, 1) if total_classified > 0 else None
-            
+
     return jsonify({
         'blasts': blasts,
         'missed_squirrels': missed_squirrels,
@@ -6357,11 +6610,11 @@ def live_stream():
         while True:
             with frame_lock:
                 current_jpeg = latest_frame_jpeg
-            
+
             if current_jpeg is None or current_jpeg == last_sent:
                 time.sleep(0.05)
                 continue
-                
+
             last_sent = current_jpeg
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + current_jpeg + b'\r\n\r\n')
@@ -6373,10 +6626,10 @@ def classify():
     data = request.get_json()
     filename = data.get('filename')
     category = data.get('category')
-    
+
     if not filename or not category:
         return jsonify({'status': 'error', 'message': 'Missing filename or category'}), 400
-        
+
     newly_added = False
     try:
         db_img = db_session.query(DBImage).filter_by(filename=filename).first()
@@ -6393,7 +6646,7 @@ def classify():
                     break
             if not src_path:
                 return jsonify({'status': 'error', 'message': 'Image does not exist'}), 404
-            
+
             mtime = os.path.getmtime(src_path)
             captured_at = get_image_timestamp(filename) or datetime.datetime.fromtimestamp(mtime)
             db_img = DBImage(
@@ -6407,7 +6660,7 @@ def classify():
     except Exception as e:
         db_session.rollback()
         return jsonify({'status': 'error', 'message': 'Database error: ' + str(e)}), 500
-        
+
     category_map = {
         'squirrel': (SQUIRREL_DIR, 'squirrel'),
         'not_squirrel': (NOT_SQUIRREL_DIR, 'not_squirrel'),
@@ -6415,12 +6668,12 @@ def classify():
         'trash': (TRASH_DIR, 'trash'),
         'raw': (RAW_DIR, 'raw')
     }
-    
+
     if category not in category_map:
         return jsonify({'status': 'error', 'message': 'Invalid category'}), 400
-        
+
     target_dir, db_target_category = category_map[category]
-    
+
     dir_map = {
         'raw': RAW_DIR,
         'squirrel': SQUIRREL_DIR,
@@ -6428,7 +6681,7 @@ def classify():
         'trash': TRASH_DIR
     }
     src_dir = dir_map.get(db_img.category)
-    
+
     if src_dir == target_dir:
         if newly_added:
             try:
@@ -6437,14 +6690,14 @@ def classify():
                 db_session.rollback()
                 return jsonify({'status': 'error', 'message': 'Database error: ' + str(e)}), 500
         return jsonify({'status': 'success', 'stats': get_stats(), 'has_history': db_session.query(DBUndoEvent).count() > 0})
-        
+
     src_path = os.path.join(src_dir, filename)
     target_path = os.path.join(target_dir, filename)
-    
+
     try:
         if os.path.exists(src_path):
             shutil.move(src_path, target_path)
-            
+
         undo_ev = DBUndoEvent(
             timestamp=datetime.datetime.now(),
             filename=filename,
@@ -6452,11 +6705,11 @@ def classify():
             target_category=db_target_category
         )
         db_session.add(undo_ev)
-        
+
         db_img.category = db_target_category
         db_img.is_auto_classified = False
         db_session.commit()
-        
+
         return jsonify({
             'status': 'success',
             'stats': get_stats(),
@@ -6472,38 +6725,38 @@ def undo():
         last_action = db_session.query(DBUndoEvent).order_by(DBUndoEvent.timestamp.desc()).first()
         if not last_action:
             return jsonify({'status': 'error', 'message': 'No actions to undo'}), 400
-            
+
         filename = last_action.filename
         original_category = last_action.original_category
         target_category = last_action.target_category
-        
+
         category_dirs = {
             'raw': RAW_DIR,
             'squirrel': SQUIRREL_DIR,
             'not_squirrel': NOT_SQUIRREL_DIR,
             'trash': TRASH_DIR
         }
-        
+
         src_dir = category_dirs.get(target_category)
         dest_dir = category_dirs.get(original_category)
-        
+
         if not src_dir or not dest_dir:
             return jsonify({'status': 'error', 'message': 'Invalid undo categories'}), 500
-            
+
         src_path = os.path.join(src_dir, filename)
         dest_path = os.path.join(dest_dir, filename)
-        
+
         if os.path.exists(src_path):
             shutil.move(src_path, dest_path)
-            
+
         db_img = db_session.query(DBImage).filter_by(filename=filename).first()
         if db_img:
             db_img.category = original_category
             db_img.is_auto_classified = filename.startswith('img_auto_')
-            
+
         db_session.delete(last_action)
         db_session.commit()
-        
+
         return jsonify({
             'status': 'success',
             'undone_image': filename,
@@ -6527,7 +6780,7 @@ def sync():
     use_gemini = data.get('auto_label', False)
     settings = load_settings()
     enable_rtsp = settings.get('enable_rtsp', True)
-    
+
     try:
         res_stdout = ""
         if not enable_rtsp:
@@ -6536,7 +6789,7 @@ def sync():
             log_message("[Sync] Triggering Pi to push backlog files: {0}".format(pi_sync_url))
             pi_sync_success = False
             pi_sync_error = None
-            
+
             try:
                 import urllib.request
                 req = urllib.request.Request(pi_sync_url, method='POST')
@@ -6547,14 +6800,14 @@ def sync():
             except Exception as pe:
                 pi_sync_error = str(pe)
                 log_message("[Sync] Pi push sync failed or Pi offline: {0}".format(pe))
-                
+
             # Fallback to local sync_images.sh pull script if Pi trigger fails (e.g. running outside Docker or Pi trigger server offline)
             if not pi_sync_success:
                 is_docker = os.path.exists('/.dockerenv') or os.environ.get('RUNNING_IN_DOCKER') == 'true'
                 if is_docker:
                     log_message("[Sync] Pi push sync failed/offline and running inside Docker. Cannot fallback to local pull ssh (hostname/keys unavailable).")
                     raise Exception("Pi trigger sync failed: {0}. Please ensure trigger_server.py is updated on the Pi and the Pi is online.".format(pi_sync_error))
-                    
+
                 log_message("[Sync] Falling back to local pull sync via sync_images.sh...")
                 script_path = os.path.join(BASE_DIR, 'sync_images.sh')
                 if os.path.exists(script_path):
@@ -6570,9 +6823,9 @@ def sync():
                 time.sleep(1.5)
         else:
             res_stdout = "RTSP streaming active; local file sync skipped."
-        
+
         process_synced_videos()
-        
+
         if use_gemini:
             python_executable = os.path.join(BASE_DIR, '.venv', 'bin', 'python3')
             labeler_script = os.path.join(BASE_DIR, 'auto_label.py')
@@ -6581,9 +6834,9 @@ def sync():
             if settings.get('gemini_api_key'):
                 env['GEMINI_API_KEY'] = settings['gemini_api_key']
             subprocess.run([python_executable, labeler_script], env=env, check=True)
-        
+
         sync_db_with_filesystem()
-        
+
         return jsonify({
             'status': 'success',
             'output': res_stdout,
@@ -6620,6 +6873,64 @@ def spray():
         return jsonify({'status': 'success', 'duration': duration})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/pending_spray')
+def api_pending_spray():
+    pending = get_pending_spray_confirmation()
+    if not pending:
+        return jsonify({'status': 'success', 'pending': None})
+    base_url = get_local_base_url()
+    image_url, _image_path = build_image_url(pending.get('image_filename'), base_url)
+    pending['image_url'] = image_url
+    pending['confirm_url'] = "{0}/?confirm={1}".format(base_url, pending.get('id'))
+    pending['expires_in_seconds'] = max(0, pending.get('expires_at', 0) - time.time())
+    return jsonify({'status': 'success', 'pending': pending})
+
+@app.route('/api/confirm_spray', methods=['POST'])
+def api_confirm_spray():
+    global last_spray_time
+    data = request.get_json(silent=True) or {}
+    confirm_id = data.get('id') or request.args.get('id')
+    pending = get_pending_spray_confirmation()
+    if not pending:
+        return jsonify({'status': 'error', 'message': 'No pending spray confirmation'}), 404
+    if confirm_id and confirm_id != pending.get('id'):
+        return jsonify({'status': 'error', 'message': 'Pending spray confirmation does not match'}), 409
+
+    duration = pending.get('duration') or get_current_spray_duration()
+    try:
+        duration = float(duration)
+    except Exception:
+        duration = get_current_spray_duration()
+
+    success = trigger_spray_controller(duration)
+    if not success:
+        return jsonify({'status': 'error', 'message': 'Spray controller did not accept the command'}), 500
+
+    last_spray_time = time.time()
+    log_blast(
+        'auto',
+        pending.get('confidence'),
+        pending.get('model_name') or active_model_name,
+        pending.get('image_filename'),
+        duration=duration
+    )
+    clear_pending_spray_confirmation(pending.get('id'))
+    log_message("[Confirm Spray] User confirmed pending spray {0}; duration={1:.1f}s.".format(pending.get('id'), duration))
+    return jsonify({'status': 'success', 'duration': duration})
+
+@app.route('/api/dismiss_spray', methods=['POST'])
+def api_dismiss_spray():
+    data = request.get_json(silent=True) or {}
+    confirm_id = data.get('id') or request.args.get('id')
+    pending = get_pending_spray_confirmation()
+    if not pending:
+        return jsonify({'status': 'success', 'dismissed': False})
+    if confirm_id and confirm_id != pending.get('id'):
+        return jsonify({'status': 'error', 'message': 'Pending spray confirmation does not match'}), 409
+    clear_pending_spray_confirmation(pending.get('id'))
+    log_message("[Confirm Spray] User dismissed pending spray {0}.".format(pending.get('id')))
+    return jsonify({'status': 'success', 'dismissed': True})
 
 @app.route('/api/spray_confirm', methods=['POST'])
 def spray_confirm():
@@ -6664,7 +6975,12 @@ def spray_confirm():
 @app.route('/api/automation_status')
 def get_automation_status():
     global automation_enabled
-    return jsonify({'enabled': automation_enabled})
+    settings = load_settings()
+    return jsonify({
+        'enabled': automation_enabled,
+        'spray_mode': settings.get('spray_mode', 'auto'),
+        'pending': get_pending_spray_confirmation()
+    })
 
 @app.route('/api/pi_status', methods=['POST'])
 def pi_status():
@@ -6695,6 +7011,7 @@ def api_health():
     return jsonify({
         'status': status,
         'automation_enabled': automation_enabled,
+        'pending_spray': get_pending_spray_confirmation(),
         'active_model': active_model_name,
         'active_model_type': active_model_type,
         'latest_frame_age_seconds': frame_age,
@@ -6742,6 +7059,8 @@ def api_health():
             'pi_inference_shadow_mode': settings.get('pi_inference_shadow_mode'),
             'snapshot_url': settings.get('snapshot_url'),
             'confidence_threshold': settings.get('confidence_threshold'),
+            'spray_mode': settings.get('spray_mode'),
+            'spray_confirmation_timeout_seconds': settings.get('spray_confirmation_timeout_seconds'),
             'spray_decision_required_hits': settings.get('spray_decision_required_hits'),
             'spray_decision_window_seconds': settings.get('spray_decision_window_seconds'),
             'spray_decision_average_confidence': settings.get('spray_decision_average_confidence'),
@@ -6818,7 +7137,8 @@ def toggle_automation():
     automation_enabled = not automation_enabled
     save_automation_status(automation_enabled)
     log_message("[Automation] Automation toggled to: {0}".format(automation_enabled))
-    return jsonify({'enabled': automation_enabled})
+    settings = load_settings()
+    return jsonify({'enabled': automation_enabled, 'spray_mode': settings.get('spray_mode', 'auto')})
 
 @app.route('/api/train/start', methods=['POST'])
 def start_training():
@@ -6826,7 +7146,7 @@ def start_training():
     # Check if already running
     if training_process is not None and training_process.poll() is None:
         return jsonify({'status': 'error', 'message': 'Training is already in progress.'})
-        
+
     # Clear the log file
     log_path = os.path.join(BASE_DIR, 'data', 'train.log')
     false_alarm_training = extract_all_false_alarm_training_frames()
@@ -6840,7 +7160,7 @@ def start_training():
             ))
     except Exception as e:
         log_message("Error clearing train.log: {0}".format(e))
-        
+
     # Start train.py as a subprocess using the same python interpreter
     import sys
     train_script = os.path.join(BASE_DIR, 'train.py')
@@ -6876,7 +7196,7 @@ def train_false_alarms():
 def train_status():
     global training_process, last_exit_code, model_reloaded
     running = False
-    
+
     if training_process is not None:
         exit_code = training_process.poll()
         if exit_code is None:
@@ -6886,7 +7206,7 @@ def train_status():
         else:
             last_exit_code = exit_code
             training_process = None  # Reset pointer since it completed
-            
+
             # Hot-reload if successful
             if last_exit_code == 0 and not model_reloaded:
                 try:
@@ -6900,7 +7220,7 @@ def train_status():
                     model_reloaded = True
                 except Exception as e:
                     log_message("Error hot-reloading weights: {0}".format(e))
-                    
+
     # Read the log file
     log_path = os.path.join(BASE_DIR, 'data', 'train.log')
     logs = ""
@@ -6910,7 +7230,7 @@ def train_status():
                 logs = f.read()
         except Exception as e:
             logs = "Error reading log: {0}".format(str(e))
-            
+
     return jsonify({
         'running': running,
         'exit_code': last_exit_code,
@@ -6954,7 +7274,7 @@ def upload_video():
     lower_filename = filename.lower()
     if not (lower_filename.endswith('.h264') or lower_filename.endswith('.mp4')):
         return jsonify({'status': 'error', 'message': 'Unsupported video filename'}), 400
-    
+
     try:
         if lower_filename.endswith('.mp4'):
             target_dir = os.path.join(VIDEOS_DIR, 'test') if lower_filename.startswith('vid_test_') else VIDEOS_DIR
@@ -6988,7 +7308,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         return {'status': 'error', 'message': 'No image data received'}, 400
 
     settings = load_settings()
-    
+
     import datetime
     now_dt = datetime.datetime.now()
     filename = "img_auto_{0}.jpg".format(now_dt.strftime("%Y%m%d_%H%M%S_%f"))
@@ -7022,16 +7342,21 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         else:
             is_squirrel, confidence = prediction
     model_ms = (time.time() - predict_started_at) * 1000
-            
+
     current_time = time.time()
     threshold = float(settings.get('confidence_threshold', 0.70))
     cooldown = float(settings.get('spray_cooldown_seconds', 60))
     cooldown_active = (current_time - last_spray_time < cooldown)
     meets_threshold = (confidence >= threshold)
     decision = get_spray_decision(is_squirrel, confidence, settings, current_time)
-    should_spray = automation_enabled and decision['ready'] and not cooldown_active
+    spray_mode = str(settings.get('spray_mode', 'auto') or 'auto').strip().lower()
+    if spray_mode not in ('auto', 'confirm'):
+        spray_mode = 'auto'
+    ready_for_action = automation_enabled and decision['ready'] and not cooldown_active
+    should_spray = ready_for_action and spray_mode == 'auto'
+    should_request_confirmation = ready_for_action and spray_mode == 'confirm'
 
-    should_save_image = save_requested or should_spray
+    should_save_image = save_requested or should_spray or should_request_confirmation
     db_img = None
 
     save_started_at = time.time()
@@ -7091,9 +7416,10 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         except Exception as e:
             print("Error removing unsaved prediction temp file:", e)
     save_ms = (time.time() - save_started_at) * 1000
-        
+
     duration = get_current_spray_duration()
-    
+    pending_confirmation = None
+
     if should_spray:
         if not is_test:
             if source == 'pi_upload':
@@ -7118,6 +7444,22 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
                 trigger_thread.start()
                 if should_save_image:
                     start_local_video_recording(duration, filename)
+    elif should_request_confirmation:
+        if not is_test:
+            pending_confirmation, notified = create_or_update_pending_spray(
+                confidence,
+                filename if should_save_image else None,
+                duration,
+                decision,
+                active_model_name
+            )
+            log_message("[Confirm Spray] Spray threshold met; {0} confirmation {1} for {2}/{3} hits, avg {4:.1f}%.".format(
+                "sent" if notified else "using existing",
+                pending_confirmation.get('id') if pending_confirmation else "none",
+                decision['hits'],
+                decision['required_hits'],
+                decision['average_confidence'] * 100
+            ))
     elif is_squirrel and automation_enabled:
         if not meets_threshold:
             log_message("[Prediction] Squirrel detected, but skipping spray because confidence ({0:.1f}%) is below threshold ({1:.1f}%).".format(
@@ -7134,7 +7476,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
                 decision['window_seconds'],
                 decision['average_confidence'] * 100
             ))
-        
+
     total_ms = (time.time() - request_started_at) * 1000
     metrics = {
         'source': source,
@@ -7147,6 +7489,8 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         'is_squirrel_raw': is_squirrel,
         'is_squirrel_response': should_spray,
         'should_spray': should_spray,
+        'spray_mode': spray_mode,
+        'pending_confirmation': pending_confirmation,
         'spray_decision': decision,
         'confidence': confidence,
         'write_ms': round(write_ms, 1),
@@ -7181,6 +7525,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         'is_squirrel': should_spray,
         'detected_squirrel': is_squirrel,
         'should_spray': should_spray,
+        'pending_confirmation': pending_confirmation,
         'confidence': confidence,
         'filename': filename if should_save_image else None,
         'saved': should_save_image,
@@ -7227,15 +7572,15 @@ def get_eastern_time():
         first_sun_march = 1 + (6 - w_march) % 7
         second_sun_march = first_sun_march + 7
         dst_start = datetime.datetime(year, 3, second_sun_march, 2, 0, 0)
-        
+
         nov_1 = datetime.datetime(year, 11, 1)
         w_nov = nov_1.weekday()
         first_sun_nov = 1 + (6 - w_nov) % 7
         dst_end = datetime.datetime(year, 11, first_sun_nov, 2, 0, 0)
-        
+
         utc_start = dst_start + datetime.timedelta(hours=5)
         utc_end = dst_end + datetime.timedelta(hours=4)
-        
+
         if utc_start <= utc_now < utc_end:
             offset = 4
         else:
@@ -7313,14 +7658,14 @@ def finalize_video_recording(filepath):
             thumb_filename = os.path.splitext(mp4_filename)[0] + '.jpg'
             thumb_path = os.path.join(VIDEOS_DIR, thumb_filename)
             temp_thumb_path = thumb_path + '.tmp'
-            
+
             thumb_cmd = [ffmpeg_path, '-y', '-i', filepath, '-ss', '00:00:00.5', '-vframes', '1', '-f', 'image2', temp_thumb_path]
             subprocess.run(thumb_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             os.rename(temp_thumb_path, thumb_path)
             print("[RTSP-Record] Generated thumbnail for {}".format(mp4_filename))
         else:
             print("[RTSP-Record] ffmpeg not found, skipping thumbnail generation.")
-            
+
         process_synced_videos()
     except Exception as e:
         print("[RTSP-Record] Error finalizing video recording:", e)
@@ -7329,7 +7674,7 @@ def start_local_video_recording(duration, still_filename):
     global record_file_path, record_video_writer, record_until_time, record_frames_written
     import cv2
     import datetime
-    
+
     try:
         if not still_filename.startswith("img_auto_"):
             raise ValueError("non-timestamp still label")
@@ -7342,26 +7687,26 @@ def start_local_video_recording(duration, still_filename):
         vid_filename = "vid_{}.mp4".format(time_part)
     except Exception:
         vid_filename = "vid_{}.mp4".format(datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
-        
+
     filepath = os.path.join(VIDEOS_DIR, vid_filename)
-    
+
     with record_lock:
         if record_video_writer is not None:
             try: record_video_writer.release()
             except: pass
-        
+
         with frame_lock:
             if latest_frame_raw is not None:
                 height, width, _ = latest_frame_raw.shape
             else:
                 width, height = 1280, 720
-                
+
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         record_video_writer = cv2.VideoWriter(filepath, fourcc, 10.0, (width, height))
         record_file_path = filepath
         record_until_time = time.time() + duration + 2.0
         record_frames_written = 0
-        
+
     print("[RTSP-Record] Started local recording to {} for {}s".format(filepath, duration + 2.0))
 
 def write_recording_frame_from_jpeg(img_data):
@@ -7444,26 +7789,26 @@ def snapshot_thread_loop():
 def rtsp_thread_loop():
     global latest_frame_jpeg, latest_frame_time, latest_frame_raw, last_spray_time
     global record_file_path, record_video_writer, record_frames_written
-    
+
     import cv2
     import collections
     import numpy as np
     import time
     import shutil
-    
+
     circular_buffer = collections.deque(maxlen=30)
     prev_gray = None
     last_motion_save_time = 0.0
     last_settings_load = 0.0
-    
+
     settings = load_settings()
     rtsp_url = settings.get('rtsp_stream_url', 'rtsp://pi3:8554/live')
     enable_rtsp = settings.get('enable_rtsp', True)
-    
+
     frame_interval = 0.1
-    
+
     print("[RTSP] Background stream thread started. URL: {}".format(rtsp_url))
-    
+
     while True:
         if not enable_rtsp:
             time.sleep(2.0)
@@ -7471,7 +7816,7 @@ def rtsp_thread_loop():
             enable_rtsp = settings.get('enable_rtsp', True)
             rtsp_url = settings.get('rtsp_stream_url', 'rtsp://pi3:8554/live')
             continue
-            
+
         cap = cv2.VideoCapture(rtsp_url)
         if not cap.isOpened():
             print("[RTSP] Failed to open stream at {}. Retrying in 5 seconds...".format(rtsp_url))
@@ -7480,29 +7825,29 @@ def rtsp_thread_loop():
             enable_rtsp = settings.get('enable_rtsp', True)
             rtsp_url = settings.get('rtsp_stream_url', 'rtsp://pi3:8554/live')
             continue
-            
+
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         prev_gray = None
-        
+
         while enable_rtsp:
             for _ in range(3):
                 cap.grab()
-                
+
             ret, frame = cap.read()
             if not ret:
                 print("[RTSP] Stream connection lost. Reconnecting...")
                 break
-                
+
             now_time = time.time()
             circular_buffer.append(frame.copy())
-            
+
             ret_jpg, jpeg_buf = cv2.imencode('.jpg', frame)
             if ret_jpg:
                 with frame_lock:
                     latest_frame_jpeg = jpeg_buf.tobytes()
                     latest_frame_time = now_time
                     latest_frame_raw = frame.copy()
-            
+
             with record_lock:
                 if record_video_writer is not None:
                     if record_frames_written == 0:
@@ -7510,91 +7855,115 @@ def rtsp_thread_loop():
                         for bf in list(circular_buffer)[:-1]:
                             record_video_writer.write(bf)
                             record_frames_written += 1
-                    
+
                     record_video_writer.write(frame)
                     record_frames_written += 1
-                    
+
                     if now_time >= record_until_time:
                         print("[RTSP-Record] Recording finished. Total frames written: {}".format(record_frames_written))
                         record_video_writer.release()
-                        
+
                         final_path = record_file_path
                         threading.Thread(target=finalize_video_recording, args=(final_path,)).start()
-                        
+
                         record_video_writer = None
                         record_file_path = None
                         record_frames_written = 0
-            
+
             if now_time - last_settings_load > 10.0:
                 settings = load_settings()
                 enable_rtsp = settings.get('enable_rtsp', True)
                 rtsp_url = settings.get('rtsp_stream_url', 'rtsp://pi3:8554/live')
                 last_settings_load = now_time
-            
+
             local_dt = get_eastern_time()
             is_active_hour = (6 <= local_dt.hour < 20)
-            
+
             if is_active_hour and automation_enabled:
                 small_frame = cv2.resize(frame, (320, 240))
                 gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
                 gray = cv2.GaussianBlur(gray, (21, 21), 0)
-                
+
                 if prev_gray is None:
                     prev_gray = gray
                     continue
-                    
+
                 frame_diff = cv2.absdiff(prev_gray, gray)
                 thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)[1]
                 thresh = cv2.dilate(thresh, None, iterations=2)
-                
+
                 non_zero = np.sum(thresh == 255)
                 total_pixels = thresh.shape[0] * thresh.shape[1]
                 motion_percent = (non_zero / total_pixels) * 100.0
-                
+
                 prev_gray = gray
-                
+
                 if motion_percent > 0.8:
                     temp_filepath = os.path.join(RAW_DIR, 'temp_rtsp_inference.jpg')
                     try:
                         cv2.imwrite(temp_filepath, frame)
                         is_squirrel, confidence = model_predict(temp_filepath)
-                        
+
                         threshold = float(settings.get('confidence_threshold', 0.70))
                         cooldown = float(settings.get('spray_cooldown_seconds', 60))
                         cooldown_active = (now_time - last_spray_time < cooldown)
                         meets_threshold = (confidence >= threshold)
                         decision = get_spray_decision(is_squirrel, confidence, settings, now_time)
-                        
+
                         if is_squirrel and meets_threshold:
                             if decision['ready'] and not cooldown_active:
-                                print("[RTSP-Inference] Squirrel confirmed! Conf: {:.1f}%. Spraying!".format(confidence*100))
                                 duration = get_current_spray_duration()
-                                last_spray_time = now_time
-                                log_blast('auto', confidence, active_model_name)
-                                
-                                trigger_spray_controller(duration)
-                                
                                 now_str = local_dt.strftime("%Y%m%d_%H%M%S_%f")
                                 filename = "img_auto_{}.jpg".format(now_str)
-                                squirrel_path = os.path.join(SQUIRREL_DIR, filename)
-                                shutil.copy(temp_filepath, squirrel_path)
-                                
-                                try:
-                                    db_img = DBImage(
-                                        filename=filename,
-                                        category='squirrel',
-                                        captured_at=local_dt,
-                                        prediction_confidence=confidence,
-                                        is_auto_classified=True
-                                    )
-                                    db_session.add(db_img)
-                                    db_session.commit()
-                                    log_message("[Auto-Classify] Saved auto image {} (conf: {:.2f})".format(filename, confidence))
-                                except Exception as dbe:
-                                    db_session.rollback()
-                                    print("DB save failed:", dbe)
-                                    
-                                start_local_video_recording(duration, filename)
+                                spray_mode = str(settings.get('spray_mode', 'auto') or 'auto').strip().lower()
+
+                                if spray_mode == 'confirm':
+                                    raw_path = os.path.join(RAW_DIR, filename)
+                                    shutil.copy(temp_filepath, raw_path)
+                                    try:
+                                        db_img = DBImage(
+                                            filename=filename,
+                                            category='raw',
+                                            captured_at=local_dt,
+                                            prediction_confidence=confidence,
+                                            is_auto_classified=False
+                                        )
+                                        db_session.add(db_img)
+                                        db_session.commit()
+                                    except Exception as dbe:
+                                        db_session.rollback()
+                                        print("DB save failed:", dbe)
+                                    pending, notified = create_or_update_pending_spray(confidence, filename, duration, decision, active_model_name)
+                                    print("[RTSP-Inference] Squirrel confirmed; {0} confirmation {1}.".format(
+                                        "sent" if notified else "using existing",
+                                        pending.get('id') if pending else "none"
+                                    ))
+                                else:
+                                    print("[RTSP-Inference] Squirrel confirmed! Conf: {:.1f}%. Spraying!".format(confidence*100))
+                                    last_spray_time = now_time
+                                    log_blast('auto', confidence, active_model_name)
+
+                                    trigger_spray_controller(duration)
+
+                                    squirrel_path = os.path.join(SQUIRREL_DIR, filename)
+                                    shutil.copy(temp_filepath, squirrel_path)
+
+                                    try:
+                                        db_img = DBImage(
+                                            filename=filename,
+                                            category='squirrel',
+                                            captured_at=local_dt,
+                                            prediction_confidence=confidence,
+                                            is_auto_classified=True
+                                        )
+                                        db_session.add(db_img)
+                                        db_session.commit()
+                                        log_message("[Auto-Classify] Saved auto image {} (conf: {:.2f})".format(filename, confidence))
+                                    except Exception as dbe:
+                                        db_session.rollback()
+                                        print("DB save failed:", dbe)
+
+                                    start_local_video_recording(duration, filename)
                             elif not decision['ready']:
                                 print("[RTSP-Inference] Squirrel detection held for confirmation: {0}/{1} hits.".format(
                                     decision['hits'], decision['required_hits']
@@ -7608,7 +7977,7 @@ def rtsp_thread_loop():
                                 filename = "img_auto_{}.jpg".format(now_str)
                                 raw_path = os.path.join(RAW_DIR, filename)
                                 shutil.copy(temp_filepath, raw_path)
-                                
+
                                 try:
                                     db_img = DBImage(
                                         filename=filename,
@@ -7624,7 +7993,7 @@ def rtsp_thread_loop():
                                 except Exception as dbe:
                                     db_session.rollback()
                                     print("DB save failed:", dbe)
-                                    
+
                         if os.path.exists(temp_filepath):
                             os.remove(temp_filepath)
                     except Exception as ie:
@@ -7632,9 +8001,9 @@ def rtsp_thread_loop():
                         if os.path.exists(temp_filepath):
                             try: os.remove(temp_filepath)
                             except: pass
-            
+
             time.sleep(frame_interval)
-            
+
         cap.release()
 
 

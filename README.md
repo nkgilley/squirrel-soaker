@@ -234,6 +234,7 @@ Important settings:
 - **Camera Rotation**: legacy Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
+- **Spray Mode**: automation can spray immediately after the decision gate passes, or ask for confirmation first. Confirmation mode sends a notification link to the dashboard with the live image plus spray/dismiss buttons.
 - **Spray Controller**: use `Raspberry Pi` for the Pi 5 deployment. ESPHome remains available only if the ESP32 is put back in service.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
