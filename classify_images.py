@@ -5333,6 +5333,18 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function refreshModalAfterClassification() {
+            await loadNext();
+            if (galleryImages.length > 0) {
+                if (modalIndex >= galleryImages.length) {
+                    modalIndex = galleryImages.length - 1;
+                }
+                updateModalContent();
+            } else {
+                document.getElementById('image-modal').classList.remove('show');
+            }
+        }
+
         function updateModalContent() {
             if (modalIndex < 0 || modalIndex >= galleryImages.length) return;
             const img = galleryImages[modalIndex];
@@ -5392,7 +5404,7 @@ HTML_TEMPLATE = """
                         container.className = `image-container`;
                     }
                     if (galleryImages.length === 0) {
-                        closeImageModal();
+                        refreshModalAfterClassification();
                     } else {
                         if (modalIndex >= galleryImages.length) {
                             modalIndex = galleryImages.length - 1;
