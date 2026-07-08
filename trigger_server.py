@@ -50,6 +50,7 @@ VIDEO_POST_ROLL_SECONDS = 1.0
 CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
 VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 720
+CAMERA_SENSOR_MODE = "2304:1296:10:P"
 sync_lock = threading.Lock()
 spray_lock = threading.Lock()
 latest_settings = {}
@@ -102,6 +103,11 @@ def get_camera_tuning():
         'camera_sharpness': float(latest_settings.get('camera_sharpness', 1.0)),
         'camera_tuning_enabled': bool(latest_settings.get('camera_tuning_enabled', False))
     }
+
+def get_camera_sensor_mode():
+    if not latest_settings:
+        get_local_time_and_defaults()
+    return str(latest_settings.get('camera_sensor_mode', CAMERA_SENSOR_MODE) or '').strip()
 
 def ensure_dir(path):
     if not os.path.exists(path):
@@ -301,6 +307,9 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None):
             print("[Video] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, rotation))
         if roi:
             cmd.extend(["--roi", roi])
+        sensor_mode = get_camera_sensor_mode()
+        if sensor_mode:
+            cmd.extend(["--mode", sensor_mode])
         append_rpicam_tuning(cmd)
         return cmd
 
@@ -403,6 +412,9 @@ def build_still_command(filepath, rotation=None, roi=None):
             cmd.extend(["--rotation", str(rotation)])
         if roi:
             cmd.extend(["--roi", roi])
+        sensor_mode = get_camera_sensor_mode()
+        if sensor_mode:
+            cmd.extend(["--mode", sensor_mode])
         append_rpicam_tuning(cmd)
         return cmd
     cmd = [camera_cmd, "-w", "1280", "-h", "960", "-q", "80", "-o", filepath, "-t", "1000"]

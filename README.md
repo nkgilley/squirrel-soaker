@@ -222,6 +222,7 @@ Important settings:
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
 - **Live vs Review Size**: live analysis frames stay smaller for speed, while saved review/classification frames can use a higher Camera Module 3 resolution. The Pi 5 default is 2304x1296 review frames.
 - **Sensor Mode**: default `2304:1296:10:P`, forcing live and review captures through the same Camera Module 3 sensor mode so ROI/crop stays aligned across 5-second live frames and 30-second review frames.
+- **Video ROI**: spray videos use their own ROI, but still use the same Camera Module 3 sensor mode as still captures so video and preview crops are comparable.
 - **Focus Mode**: Camera Module 3 focus is explicit. The current setup uses auto-on-capture by default; a full-frame diagnostic picked a lens position near `1.1`. Manual focus is available in Settings, but a bad manual value can make every frame look dramatically blurry.
 - **Camera/Video Rotation**: still and video rotation are separate settings because Pi camera still and video paths can need different orientation values.
 - **Camera Module 3 Tuning**: AWB, exposure, metering, saturation, contrast, and sharpness are configurable. Defaults are neutral for a normal Camera Module 3.
