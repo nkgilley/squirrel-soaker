@@ -834,6 +834,8 @@ training_process = None
 
 last_exit_code = None
 model_reloaded = False
+last_trained_model_filename = None
+last_trained_model_prompted = False
 
 def load_automation_status():
     global automation_enabled
@@ -4493,6 +4495,8 @@ HTML_TEMPLATE = """
         let trainPollingInterval = null;
         let logsPollingInterval = null;
         let isTrainingRunning = false;
+        let lastPromptedTrainedModel = null;
+        let latestTrainedModel = null;
 
         function renderTrainView() {
             const workspace = document.getElementById('workspace-card');
@@ -4506,7 +4510,7 @@ HTML_TEMPLATE = """
                     <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);">Finetune ResNet-18 Classifier</h3>
                     <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1.25rem; line-height: 1.5;">
                         This will retrain the AI model locally using all categorized images inside the squirrel and not_squirrel dataset folders.
-                        The training runs in the background and will automatically reload the new weights upon successful completion.
+                        The training runs in the background, saves a timestamped checkpoint, and asks before switching the active model.
                     </p>
                     <button id="start-train-btn" class="btn" style="background-color: var(--color-sync); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);" onclick="startTraining()">
                         <span class="spinner" id="train-spinner" style="display: none; border-left-color: white;"></span>
@@ -4515,6 +4519,16 @@ HTML_TEMPLATE = """
                     <button id="false-alarm-train-btn" class="btn" style="margin-left: 0.5rem; background-color: transparent; border: 1px solid var(--color-delete); color: var(--color-delete);" onclick="prepareFalseAlarmTraining()">
                         Build False Alarm Negatives
                     </button>
+                </div>
+
+                <div id="trained-model-panel" style="display: none; border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.10); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem;">
+                    <div style="display: flex; justify-content: space-between; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <div>
+                            <div style="font-size: 0.8rem; text-transform: uppercase; color: #34d399; font-weight: 700;">New model checkpoint</div>
+                            <div id="trained-model-name" style="font-family: monospace; color: var(--text-primary); margin-top: 0.25rem;"></div>
+                        </div>
+                        <button id="trained-model-use-btn" class="btn" style="background-color: var(--color-add); color: white;" onclick="useTrainedModel()">Use This Model</button>
+                    </div>
                 </div>
 
                 <div style="display: flex; flex-direction: column; gap: 0.5rem; flex-grow: 1; height: 350px; min-height: 250px;">
@@ -4545,6 +4559,7 @@ HTML_TEMPLATE = """
                 const btnText = document.getElementById('train-btn-text');
                 const spinner = document.getElementById('train-spinner');
                 const logsPre = document.getElementById('train-logs');
+                renderTrainedModelPrompt(data.trained_model);
 
                 if (badge) {
                     if (data.running) {
@@ -4605,6 +4620,61 @@ HTML_TEMPLATE = """
                 }
             } catch (e) {
                 console.error("Error checking training status:", e);
+            }
+        }
+
+        function renderTrainedModelPrompt(trainedModel) {
+            const panel = document.getElementById('trained-model-panel');
+            const nameEl = document.getElementById('trained-model-name');
+            const useBtn = document.getElementById('trained-model-use-btn');
+            latestTrainedModel = trainedModel && trainedModel.filename ? trainedModel : null;
+            if (!panel || !nameEl || !useBtn) return;
+
+            if (!latestTrainedModel) {
+                panel.style.display = 'none';
+                return;
+            }
+
+            panel.style.display = 'block';
+            nameEl.innerText = latestTrainedModel.filename + (latestTrainedModel.is_active ? ' (active)' : '');
+            useBtn.disabled = latestTrainedModel.is_active;
+            useBtn.style.opacity = latestTrainedModel.is_active ? '0.6' : '1';
+            useBtn.innerText = latestTrainedModel.is_active ? 'Active Model' : 'Use This Model';
+
+            if (latestTrainedModel.should_prompt && lastPromptedTrainedModel !== latestTrainedModel.filename) {
+                lastPromptedTrainedModel = latestTrainedModel.filename;
+                if (confirm(`Training saved ${latestTrainedModel.filename}. Start using this model now?`)) {
+                    useTrainedModel();
+                }
+            }
+        }
+
+        async function useTrainedModel() {
+            if (!latestTrainedModel || !latestTrainedModel.filename) return;
+            const btn = document.getElementById('trained-model-use-btn');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerText = 'Activating...';
+            }
+            try {
+                const res = await fetch('/api/train/use_model', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: latestTrainedModel.filename })
+                });
+                const data = await res.json();
+                if (data.status !== 'success') {
+                    alert(data.message || 'Could not activate model.');
+                }
+                await checkTrainStatus();
+                await fetchAutomationStatus();
+            } catch (e) {
+                console.error("Error activating trained model:", e);
+                alert("Error activating trained model: " + e);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                }
             }
         }
 
@@ -6340,6 +6410,22 @@ def get_available_models():
     models.sort()
     return models
 
+def save_timestamped_training_checkpoint():
+    src_path = os.path.join(BASE_DIR, 'model.pth')
+    if not os.path.exists(src_path):
+        raise FileNotFoundError('No trained model.pth found after training')
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = 'resnet18_{0}.pth'.format(timestamp)
+    dst_path = os.path.join(MODELS_DIR, filename)
+    suffix = 1
+    while os.path.exists(dst_path):
+        filename = 'resnet18_{0}_{1}.pth'.format(timestamp, suffix)
+        dst_path = os.path.join(MODELS_DIR, filename)
+        suffix += 1
+    shutil.copy2(src_path, dst_path)
+    log_message("[Training] Saved newly trained model checkpoint as {0}".format(filename))
+    return filename
+
 def get_model_accuracies():
     try:
         results = db_session.query(DBBlast).filter(DBBlast.type == 'auto').all()
@@ -7243,7 +7329,7 @@ def toggle_automation():
 
 @app.route('/api/train/start', methods=['POST'])
 def start_training():
-    global training_process, last_exit_code, model_reloaded
+    global training_process, last_exit_code, model_reloaded, last_trained_model_filename, last_trained_model_prompted
     # Check if already running
     if training_process is not None and training_process.poll() is None:
         return jsonify({'status': 'error', 'message': 'Training is already in progress.'})
@@ -7268,6 +7354,8 @@ def start_training():
     try:
         last_exit_code = None
         model_reloaded = False
+        last_trained_model_filename = None
+        last_trained_model_prompted = False
         training_process = subprocess.Popen(
             [sys.executable, '-u', train_script],
             stdout=open(log_path, 'a'),
@@ -7295,7 +7383,7 @@ def train_false_alarms():
 
 @app.route('/api/train/status')
 def train_status():
-    global training_process, last_exit_code, model_reloaded
+    global training_process, last_exit_code, model_reloaded, last_trained_model_filename, last_trained_model_prompted
     running = False
 
     if training_process is not None:
@@ -7304,23 +7392,20 @@ def train_status():
             running = True
             last_exit_code = None
             model_reloaded = False
+            last_trained_model_filename = None
+            last_trained_model_prompted = False
         else:
             last_exit_code = exit_code
             training_process = None  # Reset pointer since it completed
 
-            # Hot-reload if successful
+            # Save a timestamped checkpoint if training succeeded. Do not make it active
+            # until the user confirms in the UI.
             if last_exit_code == 0 and not model_reloaded:
                 try:
-                    src_path = os.path.join(BASE_DIR, 'model.pth')
-                    dst_path = os.path.join(MODELS_DIR, 'resnet18_default.pth')
-                    if os.path.exists(src_path):
-                        shutil.copy2(src_path, dst_path)
-                        log_message("[Training] Copied newly trained model.pth to data/models/resnet18_default.pth")
-                    load_active_model()
-                    log_message("[Training] Hot-reloaded active model successfully.")
+                    last_trained_model_filename = save_timestamped_training_checkpoint()
                     model_reloaded = True
                 except Exception as e:
-                    log_message("Error hot-reloading weights: {0}".format(e))
+                    log_message("Error saving timestamped trained model: {0}".format(e))
 
     # Read the log file
     log_path = os.path.join(BASE_DIR, 'data', 'train.log')
@@ -7332,11 +7417,45 @@ def train_status():
         except Exception as e:
             logs = "Error reading log: {0}".format(str(e))
 
+    settings = load_settings()
+    trained_model = None
+    if last_trained_model_filename:
+        trained_model = {
+            'filename': last_trained_model_filename,
+            'is_active': settings.get('active_model') == last_trained_model_filename,
+            'should_prompt': (last_exit_code == 0 and not last_trained_model_prompted and settings.get('active_model') != last_trained_model_filename)
+        }
+        if trained_model['should_prompt']:
+            last_trained_model_prompted = True
+
     return jsonify({
         'running': running,
         'exit_code': last_exit_code,
-        'logs': logs
+        'logs': logs,
+        'trained_model': trained_model,
+        'active_model': settings.get('active_model'),
+        'available_models': get_available_models()
     })
+
+@app.route('/api/train/use_model', methods=['POST'])
+def use_trained_model():
+    try:
+        data = request.get_json(silent=True) or {}
+        filename = os.path.basename(data.get('filename') or '')
+        if not filename or filename not in get_available_models():
+            return jsonify({'status': 'error', 'message': 'Model checkpoint not found'}), 404
+        settings = load_settings()
+        settings['active_model'] = filename
+        save_settings(settings)
+        load_active_model()
+        log_message("[Training] Activated trained model checkpoint {0}".format(filename))
+        return jsonify({
+            'status': 'success',
+            'active_model': filename,
+            'available_models': get_available_models()
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/logs')
 def get_classifier_logs():

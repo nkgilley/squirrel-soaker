@@ -256,20 +256,22 @@ Main views:
 - **Classify Queue**: sort raw captures into squirrel, not-squirrel, or trash.
 - **Dataset Review**: inspect and correct labeled training images.
 - **Videos**: review spray event recordings.
-- **Training**: retrain the model and hot-reload weights when training completes.
+- **Training**: retrain the model, save a timestamped checkpoint, and choose whether to activate it.
 - **Settings**: configure camera cadence, image quality, ROI calibration, thresholds, motion prefilter, and automation behavior.
 
 When a spray video is marked as a false positive, the app extracts several frames into `data/dataset/not_squirrel` as hard-negative examples. Starting training also backfills hard negatives from all currently marked false-positive videos before launching `train.py`.
 
-Dashboard health graph:
+Successful UI training writes `model.pth` and also copies it to `data/models/resnet18_YYYYMMDD_HHMMSS.pth`. The Train page prompts before switching `active_model` to the newly trained checkpoint.
 
-- **Pi Loop**: full Pi capture/analyze loop time.
-- **Upload**: Pi-to-server request time.
-- **Predict**: server-side prediction request handling time.
-- **Model**: raw model inference time.
-- **Motion**: frame-to-frame motion score on the secondary axis.
-- **Frame Age**: seconds since the Mac app last received an analyzed frame.
-- **CPU Temp**, **SD Used %**, and **SD Backlog**: Pi health signals that show heat, storage pressure, and whether fallback files are accumulating on the Pi SD card.
+Dashboard health charts:
+
+- **Latency**: capture, upload, model, and end-to-end Pi loop time.
+- **Freshness & Motion**: last analyzed frame age and motion score.
+- **Pi Resources**: CPU temperature, SD card use, and SD backlog files.
+
+Daily compilation video:
+
+- `data/videos/compilation_20260708.mp4` contains the July 8, 2026 spray-event compilation.
 
 ---
 

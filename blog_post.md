@@ -50,7 +50,7 @@ To sort this initial raw data into training folders (`squirrel` vs. `not_squirre
 ### Phase 2: Deep Learning with PyTorch
 Once I collected about a thousand images, it was time to train the brain. 
 
-I wrote `train.py` using **PyTorch** to fine-tune a pre-trained **ResNet-18** convolutional neural network. 
+I wrote `train.py` using **PyTorch** to fine-tune a pre-trained **ResNet-18** convolutional neural network. The web UI now saves every successful training run as a timestamped checkpoint, then asks whether to make that new checkpoint the active model.
 
 #### Addressing the Class Imbalance
 My dataset had a classic class imbalance: **34 squirrel images** vs. **980 not-squirrel (birds/empty) images**. To prevent the model from simply guessing "not-squirrel" every time, I:
@@ -90,6 +90,8 @@ A high-tech sentry needs a command center. I updated the web app to feature a mo
 
 ### 📊 The 7-Day Activity Graph
 Using **Chart.js**, the dashboard aggregates event data from a persistent `data/blasts_log.json` file. It displays a dual-bar chart representing water blasts over the last 7 days, color-coding auto-detections (green) and manual sprays (blue) side-by-side.
+
+The system also builds daily compilation videos from spray recordings. The July 8, 2026 compilation is saved at `data/videos/compilation_20260708.mp4`.
 
 ### 📹 Live Snapshot Feed (The lock-contention problem)
 I wanted a live video feed on the dashboard, but hit an interesting engineering constraint: **device lock contention**. 
