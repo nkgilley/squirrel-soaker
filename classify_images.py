@@ -2267,6 +2267,31 @@ HTML_TEMPLATE = """
             min-height: 260px;
             position: relative;
         }
+        .health-charts-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.9rem;
+        }
+        .health-mini-chart {
+            height: 175px;
+            position: relative;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: rgba(15, 23, 42, 0.28);
+            padding: 0.7rem;
+        }
+        .health-mini-title {
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            margin-bottom: 0.35rem;
+        }
+        .health-mini-chart canvas {
+            width: 100% !important;
+            height: 125px !important;
+        }
         @media (max-width: 900px) {
             .dash-grid {
                 grid-template-columns: 1fr;
@@ -3151,14 +3176,11 @@ HTML_TEMPLATE = """
         }
 
         let blastsChart = null;
-        let healthChart = null;
+        let healthCharts = {};
 
         async function renderDashboardView() {
             const workspace = document.getElementById('workspace-card');
-            if (healthChart) {
-                healthChart.destroy();
-                healthChart = null;
-            }
+            destroyHealthCharts();
             workspace.innerHTML = `
                 <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1.5rem;">
                     <h2 style="font-weight: 600; font-size: 1.25rem;">System Dashboard 📊</h2>
@@ -3243,8 +3265,19 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="health-layout">
                         <div id="health-metrics-grid" class="health-metrics-grid"></div>
-                        <div class="health-chart-wrap">
-                            <canvas id="health-chart"></canvas>
+                        <div class="health-charts-grid">
+                            <div class="health-mini-chart">
+                                <div class="health-mini-title">Latency</div>
+                                <canvas id="health-latency-chart"></canvas>
+                            </div>
+                            <div class="health-mini-chart">
+                                <div class="health-mini-title">Freshness & Motion</div>
+                                <canvas id="health-freshness-chart"></canvas>
+                            </div>
+                            <div class="health-mini-chart">
+                                <div class="health-mini-title">Pi Resources</div>
+                                <canvas id="health-resource-chart"></canvas>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -3390,10 +3423,94 @@ HTML_TEMPLATE = """
             }
         }
 
-        async function renderHealthChart() {
-            const canvas = document.getElementById('health-chart');
-            if (!canvas) return;
+        function destroyHealthCharts() {
+            Object.values(healthCharts).forEach(chart => {
+                if (chart) chart.destroy();
+            });
+            healthCharts = {};
+        }
 
+        function healthDataset(label, data, color, yAxisID = 'y', borderDash = []) {
+            return {
+                label,
+                data,
+                borderColor: color,
+                backgroundColor: color.replace(')', ', 0.12)').replace('rgb', 'rgba'),
+                borderDash,
+                tension: 0.25,
+                spanGaps: true,
+                pointRadius: 0,
+                borderWidth: 2,
+                yAxisID
+            };
+        }
+
+        function healthChartOptions(yTitle, y1Title = null) {
+            const scales = {
+                x: {
+                    grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                    ticks: {
+                        color: '#94a3b8',
+                        maxTicksLimit: 4,
+                        font: { family: 'Outfit', size: 10 }
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: { display: true, text: yTitle, color: '#94a3b8' },
+                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                }
+            };
+            if (y1Title) {
+                scales.y1 = {
+                    beginAtZero: true,
+                    position: 'right',
+                    title: { display: true, text: y1Title, color: '#94a3b8' },
+                    grid: { drawOnChartArea: false },
+                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                };
+            }
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                scales,
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#f8fafc',
+                            usePointStyle: true,
+                            boxWidth: 7,
+                            font: { family: 'Outfit', size: 10 }
+                        }
+                    },
+                    tooltip: {
+                        titleFont: { family: 'Outfit' },
+                        bodyFont: { family: 'Outfit' }
+                    }
+                }
+            };
+        }
+
+        function updateOrCreateHealthChart(key, canvasId, labels, datasets, options) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const chartData = { labels, datasets };
+            if (healthCharts[key]) {
+                healthCharts[key].data = chartData;
+                healthCharts[key].options = options;
+                healthCharts[key].update('none');
+                return;
+            }
+            healthCharts[key] = new Chart(canvas, {
+                type: 'line',
+                data: chartData,
+                options
+            });
+        }
+
+        async function renderHealthChart() {
             try {
                 const res = await fetch('/api/health/history?seconds=600');
                 const data = await res.json();
@@ -3405,149 +3522,23 @@ HTML_TEMPLATE = """
 
                 const series = (key) => samples.map(s => s[key] === undefined || s[key] === null ? null : Number(s[key]));
 
-                const chartData = {
-                    labels,
-                    datasets: [
-                        {
-                            label: 'Pi Loop',
-                            data: series('loop_ms'),
-                            borderColor: '#60a5fa',
-                            backgroundColor: 'rgba(96, 165, 250, 0.12)',
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Upload',
-                            data: series('upload_ms'),
-                            borderColor: '#34d399',
-                            backgroundColor: 'rgba(52, 211, 153, 0.12)',
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Predict',
-                            data: series('predict_total_ms'),
-                            borderColor: '#f59e0b',
-                            backgroundColor: 'rgba(245, 158, 11, 0.12)',
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Model',
-                            data: series('model_ms'),
-                            borderColor: '#f87171',
-                            backgroundColor: 'rgba(248, 113, 113, 0.12)',
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Motion',
-                            data: series('motion_score'),
-                            borderColor: '#a855f7',
-                            backgroundColor: 'rgba(168, 85, 247, 0.12)',
-                            borderDash: [4, 4],
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y1'
-                        },
-                        {
-                            label: 'Frame Age',
-                            data: series('latest_frame_age_seconds'),
-                            borderColor: '#22d3ee',
-                            backgroundColor: 'rgba(34, 211, 238, 0.12)',
-                            borderDash: [2, 3],
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y1'
-                        },
-                        {
-                            label: 'CPU Temp',
-                            data: series('cpu_temp_c'),
-                            borderColor: '#fb7185',
-                            backgroundColor: 'rgba(251, 113, 133, 0.12)',
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y1'
-                        },
-                        {
-                            label: 'SD Used %',
-                            data: series('disk_used_percent'),
-                            borderColor: '#f97316',
-                            backgroundColor: 'rgba(249, 115, 22, 0.12)',
-                            borderDash: [6, 3],
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y1'
-                        },
-                        {
-                            label: 'SD Backlog',
-                            data: series('backlog_files'),
-                            borderColor: '#eab308',
-                            backgroundColor: 'rgba(234, 179, 8, 0.12)',
-                            borderDash: [2, 2],
-                            tension: 0.25,
-                            spanGaps: true,
-                            yAxisID: 'y1'
-                        }
-                    ]
-                };
+                updateOrCreateHealthChart('latency', 'health-latency-chart', labels, [
+                    healthDataset('Capture', series('capture_ms'), 'rgb(96, 165, 250)'),
+                    healthDataset('Upload', series('upload_ms'), 'rgb(52, 211, 153)'),
+                    healthDataset('Model', series('model_ms'), 'rgb(245, 158, 11)'),
+                    healthDataset('End-to-end', series('loop_ms'), 'rgb(248, 113, 113)', 'y', [4, 3])
+                ], healthChartOptions('ms'));
 
-                if (healthChart) {
-                    healthChart.data = chartData;
-                    healthChart.update('none');
-                    return;
-                }
+                updateOrCreateHealthChart('freshness', 'health-freshness-chart', labels, [
+                    healthDataset('Frame Age', series('latest_frame_age_seconds'), 'rgb(34, 211, 238)'),
+                    healthDataset('Motion', series('motion_score'), 'rgb(168, 85, 247)', 'y1', [4, 3])
+                ], healthChartOptions('seconds', 'motion'));
 
-                healthChart = new Chart(canvas, {
-                    type: 'line',
-                    data: chartData,
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: { mode: 'index', intersect: false },
-                        scales: {
-                            x: {
-                                grid: { color: 'rgba(255, 255, 255, 0.04)' },
-                                ticks: {
-                                    color: '#94a3b8',
-                                    maxTicksLimit: 6,
-                                    font: { family: 'Outfit' }
-                                }
-                            },
-                            y: {
-                                beginAtZero: true,
-                                title: { display: true, text: 'ms', color: '#94a3b8' },
-                                grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                ticks: { color: '#94a3b8', font: { family: 'Outfit' } }
-                            },
-                            y1: {
-                                beginAtZero: true,
-                                position: 'right',
-                                title: { display: true, text: 'seconds / motion', color: '#94a3b8' },
-                                grid: { drawOnChartArea: false },
-                                ticks: { color: '#94a3b8', font: { family: 'Outfit' } }
-                            }
-                        },
-                        plugins: {
-                            legend: {
-                                labels: {
-                                    color: '#f8fafc',
-                                    usePointStyle: true,
-                                    boxWidth: 8,
-                                    font: { family: 'Outfit' }
-                                }
-                            },
-                            tooltip: {
-                                titleFont: { family: 'Outfit' },
-                                bodyFont: { family: 'Outfit' }
-                            }
-                        }
-                    }
-                });
+                updateOrCreateHealthChart('resources', 'health-resource-chart', labels, [
+                    healthDataset('CPU Temp', series('cpu_temp_c'), 'rgb(251, 113, 133)'),
+                    healthDataset('SD Used', series('disk_used_percent'), 'rgb(249, 115, 22)', 'y', [4, 3]),
+                    healthDataset('Backlog', series('backlog_files'), 'rgb(234, 179, 8)', 'y1')
+                ], healthChartOptions('temp / %', 'files'));
             } catch (e) {
                 console.error("Error rendering health chart:", e);
             }
