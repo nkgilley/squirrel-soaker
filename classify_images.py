@@ -3401,13 +3401,15 @@ HTML_TEMPLATE = """
 
                 if (pill) {
                     const label = health.status === 'ok' ? 'OK' : health.status.toUpperCase();
-                    const color = health.status === 'ok' ? '#34d399' : '#f87171';
+                    const color = health.status === 'ok' ? '#34d399' : (health.status === 'sleeping' ? '#60a5fa' : '#f87171');
                     pill.innerText = label;
                     pill.style.color = color;
                 }
                 if (grid) {
+                    const daylight = health.daylight || {};
                     grid.innerHTML = [
                         metricTile('Last Frame Age', fmtSeconds(health.latest_frame_age_seconds)),
+                        metricTile('Daylight', daylight.is_daylight === false ? `Sleeping until ${String(daylight.next_start || '').slice(11, 16)}` : 'Active'),
                         metricTile('Pi Loop', fmtMs(pi.total_ms)),
                         metricTile('Capture', fmtMs(pi.capture_ms)),
                         metricTile('Upload', fmtMs(pi.upload_ms)),
@@ -6978,9 +6980,119 @@ def pi_status():
         add_health_sample('pi', pi=data, predict=data.get('server_metrics', {}))
     return jsonify({'status': 'success'})
 
+def get_eastern_utc_offset_hours(dt):
+    year = dt.year
+    march_1 = datetime.datetime(year, 3, 1)
+    first_sun_march = 1 + (6 - march_1.weekday()) % 7
+    second_sun_march = first_sun_march + 7
+    dst_start = datetime.datetime(year, 3, second_sun_march, 2, 0, 0)
+
+    nov_1 = datetime.datetime(year, 11, 1)
+    first_sun_nov = 1 + (6 - nov_1.weekday()) % 7
+    dst_end = datetime.datetime(year, 11, first_sun_nov, 2, 0, 0)
+
+    return 4 if dst_start <= dt < dst_end else 5
+
+def calculate_sun_time(local_date, latitude, longitude, is_sunrise):
+    import math
+    approx_hour = 6.0 if is_sunrise else 18.0
+    n = local_date.timetuple().tm_yday
+    lng_hour = longitude / 15.0
+    t = n + ((approx_hour - lng_hour) / 24.0)
+    mean_anomaly = (0.9856 * t) - 3.289
+    true_long = mean_anomaly + (1.916 * math.sin(math.radians(mean_anomaly))) + (0.020 * math.sin(math.radians(2 * mean_anomaly))) + 282.634
+    true_long = true_long % 360.0
+    right_ascension = math.degrees(math.atan(0.91764 * math.tan(math.radians(true_long)))) % 360.0
+    long_quadrant = math.floor(true_long / 90.0) * 90.0
+    ra_quadrant = math.floor(right_ascension / 90.0) * 90.0
+    right_ascension = (right_ascension + long_quadrant - ra_quadrant) / 15.0
+    sin_dec = 0.39782 * math.sin(math.radians(true_long))
+    cos_dec = math.cos(math.asin(sin_dec))
+    cos_hour = (
+        math.cos(math.radians(90.833)) -
+        (sin_dec * math.sin(math.radians(latitude)))
+    ) / (cos_dec * math.cos(math.radians(latitude)))
+    if cos_hour > 1 or cos_hour < -1:
+        return None
+    hour_angle = 360.0 - math.degrees(math.acos(cos_hour)) if is_sunrise else math.degrees(math.acos(cos_hour))
+    hour_angle /= 15.0
+    local_mean_time = hour_angle + right_ascension - (0.06571 * t) - 6.622
+    utc_hour = (local_mean_time - lng_hour) % 24.0
+    hour = int(utc_hour)
+    minute_float = (utc_hour - hour) * 60.0
+    minute = int(minute_float)
+    second = int((minute_float - minute) * 60.0)
+    utc_dt = datetime.datetime(local_date.year, local_date.month, local_date.day, hour, minute, second)
+    local_offset = get_eastern_utc_offset_hours(utc_dt)
+    local_dt = utc_dt - datetime.timedelta(hours=local_offset)
+    while local_dt.date() < local_date:
+        local_dt += datetime.timedelta(days=1)
+    while local_dt.date() > local_date:
+        local_dt -= datetime.timedelta(days=1)
+    return local_dt
+
+def get_daylight_status(settings):
+    now = get_eastern_time()
+    mode = str(settings.get('daylight_mode', 'sun') or 'sun').strip().lower()
+    start_source = 'fixed'
+    if mode == 'sun':
+        sunrise = calculate_sun_time(
+            now.date(),
+            float(settings.get('daylight_latitude', 38.9586)),
+            float(settings.get('daylight_longitude', -77.3570)),
+            True
+        )
+        sunset = calculate_sun_time(
+            now.date(),
+            float(settings.get('daylight_latitude', 38.9586)),
+            float(settings.get('daylight_longitude', -77.3570)),
+            False
+        )
+        if sunrise and sunset:
+            sunrise += datetime.timedelta(minutes=int(settings.get('sunrise_offset_minutes', 0) or 0))
+            sunset += datetime.timedelta(minutes=int(settings.get('sunset_offset_minutes', 0) or 0))
+            start, end, start_source = sunrise, sunset, 'sun'
+        else:
+            start = now.replace(hour=int(settings.get('daylight_start_hour', 6)), minute=0, second=0, microsecond=0)
+            end = now.replace(hour=int(settings.get('daylight_end_hour', 20)), minute=0, second=0, microsecond=0)
+    else:
+        start = now.replace(hour=int(settings.get('daylight_start_hour', 6)), minute=0, second=0, microsecond=0)
+        end = now.replace(hour=int(settings.get('daylight_end_hour', 20)), minute=0, second=0, microsecond=0)
+
+    is_daylight_now = start <= now < end
+    next_start = start
+    if now >= end:
+        tomorrow_settings = dict(settings)
+        tomorrow = now + datetime.timedelta(days=1)
+        if mode == 'sun':
+            sunrise = calculate_sun_time(
+                tomorrow.date(),
+                float(settings.get('daylight_latitude', 38.9586)),
+                float(settings.get('daylight_longitude', -77.3570)),
+                True
+            )
+            if sunrise:
+                next_start = sunrise + datetime.timedelta(minutes=int(settings.get('sunrise_offset_minutes', 0) or 0))
+            else:
+                next_start = tomorrow.replace(hour=int(settings.get('daylight_start_hour', 6)), minute=0, second=0, microsecond=0)
+        else:
+            next_start = tomorrow.replace(hour=int(settings.get('daylight_start_hour', 6)), minute=0, second=0, microsecond=0)
+    elif now < start:
+        next_start = start
+
+    return {
+        'is_daylight': is_daylight_now,
+        'source': start_source,
+        'now': now.strftime("%Y-%m-%d %H:%M:%S"),
+        'start': start.strftime("%Y-%m-%d %H:%M:%S"),
+        'end': end.strftime("%Y-%m-%d %H:%M:%S"),
+        'next_start': next_start.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
 @app.route('/api/health')
 def api_health():
     settings = load_settings()
+    daylight = get_daylight_status(settings)
     with telemetry_lock:
         pi_status_copy = dict(latest_pi_status)
         predict_metrics_copy = dict(latest_predict_metrics)
@@ -6989,7 +7101,9 @@ def api_health():
         latest_frame_size = len(latest_frame_jpeg) if latest_frame_jpeg else 0
 
     status = 'ok'
-    if frame_age is None or frame_age > 300:
+    if settings.get('camera_source', 'pi') == 'pi' and not daylight['is_daylight']:
+        status = 'sleeping'
+    elif frame_age is None or frame_age > 300:
         status = 'offline'
     elif frame_age > max(60, int(settings.get('analysis_interval', 5)) * 4):
         status = 'stale'
@@ -7003,6 +7117,7 @@ def api_health():
         'latest_frame_age_seconds': frame_age,
         'latest_frame_size_bytes': latest_frame_size,
         'last_spray_age_seconds': time.time() - last_spray_time if last_spray_time else None,
+        'daylight': daylight,
         'pi': pi_status_copy,
         'predict': predict_metrics_copy,
         'settings': {
