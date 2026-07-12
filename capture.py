@@ -13,6 +13,8 @@ import math
 import fcntl
 import platform
 
+from squirrel_safety import device_auth_headers
+
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30
 START_HOUR = 6
@@ -42,6 +44,8 @@ CAMERA_SATURATION = 1.0
 CAMERA_CONTRAST = 1.0
 CAMERA_SHARPNESS = 1.0
 CAMERA_TUNING_ENABLED = False
+DAY_CAMERA_INDEX = 0
+NIGHT_CAMERA_INDEX = 1
 CAMERA_FOCUS_MODE = "auto"
 CAMERA_LENS_POSITION = 1.1
 CAMERA_AUTOFOCUS_WINDOW = ""
@@ -55,11 +59,19 @@ BACKLOG_MAX_FILES = 300
 BACKLOG_MAX_BYTES = 250 * 1024 * 1024
 BACKLOG_MAX_AGE_SECONDS = 24 * 60 * 60
 MAC_IP = '192.168.86.137'
+DEVICE_API_TOKEN = os.environ.get('DEVICE_API_TOKEN', '').strip()
 
 CONFIDENCE_THRESHOLD = 0.70
 last_review_save_time = 0.0
 last_analysis_sent_time = 0.0
 last_motion_fingerprint = None
+
+
+def authenticated_headers(extra=None):
+    headers = device_auth_headers(DEVICE_API_TOKEN)
+    if extra:
+        headers.update(extra)
+    return headers
 
 def is_dst_eastern(dt):
     try:
@@ -179,6 +191,13 @@ def is_daylight(dt):
     start, end, _source = get_daylight_window(dt)
     return start <= dt < end
 
+def get_camera_period(dt):
+    return "day" if is_daylight(dt) else "night"
+
+def get_active_camera_index(dt=None):
+    dt = dt or get_eastern_time()
+    return DAY_CAMERA_INDEX if get_camera_period(dt) == "day" else NIGHT_CAMERA_INDEX
+
 def get_next_daylight_start(dt):
     start, end, source = get_daylight_window(dt)
     if dt < start:
@@ -191,15 +210,16 @@ def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, VIDEO_ROTATION, CONFIDENCE_THRESHOLD
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, REVIEW_WIDTH, REVIEW_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     global CAMERA_AWB, CAMERA_EXPOSURE, CAMERA_METERING, CAMERA_SATURATION, CAMERA_CONTRAST, CAMERA_SHARPNESS
-    global CAMERA_TUNING_ENABLED, CAMERA_SENSOR_MODE, CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION, CAMERA_AUTOFOCUS_WINDOW
+    global CAMERA_TUNING_ENABLED, DAY_CAMERA_INDEX, NIGHT_CAMERA_INDEX
+    global CAMERA_SENSOR_MODE, CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION, CAMERA_AUTOFOCUS_WINDOW
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
     global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
     global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
     import urllib.request
 
-    url = "http://{0}:5001/api/settings".format(MAC_IP)
+    url = "http://{0}:5001/api/device/config".format(MAC_IP)
     try:
-        req = urllib.request.Request(url, method='GET')
+        req = urllib.request.Request(url, headers=authenticated_headers(), method='GET')
         with urllib.request.urlopen(req, timeout=3) as response:
             data = json.loads(response.read().decode('utf-8'))
             if data.get('status') == 'success':
@@ -238,6 +258,10 @@ def fetch_config_from_mac():
                         CAMERA_TUNING_ENABLED = value.strip().lower() in ('1', 'true', 'yes', 'on')
                     else:
                         CAMERA_TUNING_ENABLED = bool(value)
+                if 'day_camera_index' in settings:
+                    DAY_CAMERA_INDEX = int(settings['day_camera_index'])
+                if 'night_camera_index' in settings:
+                    NIGHT_CAMERA_INDEX = int(settings['night_camera_index'])
                 if 'confidence_threshold' in settings:
                     CONFIDENCE_THRESHOLD = float(settings['confidence_threshold'])
                 if 'analysis_width' in settings:
@@ -286,13 +310,14 @@ def fetch_config_from_mac():
                 if 'sunset_offset_minutes' in settings:
                     SUNSET_OFFSET_MINUTES = int(settings['sunset_offset_minutes'])
                 daylight_start, daylight_end, daylight_source = get_daylight_window(get_eastern_time())
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROI={14}, VideoRotation={15}, VideoROI={16}, Threshold={17:.2f}, Daylight={18} {19}-{20}".format(
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROI={14}, VideoRotation={15}, VideoROI={16}, Threshold={17:.2f}, Cameras day={18} night={19}, Daylight={20} {21}-{22}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     REVIEW_WIDTH, REVIEW_HEIGHT, REVIEW_JPEG_QUALITY,
                     CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION,
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
                     ROTATION, ROI, VIDEO_ROTATION, VIDEO_ROI, CONFIDENCE_THRESHOLD,
+                    DAY_CAMERA_INDEX, NIGHT_CAMERA_INDEX,
                     daylight_source,
                     daylight_start.strftime("%H:%M"),
                     daylight_end.strftime("%H:%M")
@@ -456,11 +481,12 @@ def prune_backlog(reason='capacity'):
         print("[Backlog] Pruned {0} old backlog files ({1} bytes) because {2}.".format(removed, removed_bytes, reason))
     return removed
 
-def check_for_squirrel(filename, img_data, should_save=True, is_test=False):
+def check_for_squirrel(filename, img_data, should_save=True, is_test=False, camera_period=None):
     import urllib.request
 
     save_flag = '1' if should_save else '0'
-    url = "http://{0}:5001/api/predict?save={1}".format(MAC_IP, save_flag)
+    period = camera_period or "day"
+    url = "http://{0}:5001/api/predict?save={1}&period={2}".format(MAC_IP, save_flag, period)
     if is_test:
         url += "&test=true"
     print("[Inference] Sending {0} to Mac predict API from memory... (save={1})".format(filename, save_flag))
@@ -470,7 +496,7 @@ def check_for_squirrel(filename, img_data, should_save=True, is_test=False):
         req = urllib.request.Request(
             url,
             data=img_data,
-            headers={'Content-Type': 'image/jpeg'},
+            headers=authenticated_headers({'Content-Type': 'image/jpeg'}),
             method='POST'
         )
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -497,7 +523,7 @@ def report_pi_status(status):
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={'Content-Type': 'application/json'},
+            headers=authenticated_headers({'Content-Type': 'application/json'}),
             method='POST'
         )
         with urllib.request.urlopen(req, timeout=2) as response:
@@ -561,7 +587,7 @@ def find_camera_still_command():
             return binary
     return 'raspistill'
 
-def build_still_command(width, height, jpeg_quality):
+def build_still_command(width, height, jpeg_quality, camera_index=None):
     camera_cmd = find_camera_still_command()
     if camera_cmd in ('rpicam-still', 'libcamera-still'):
         cmd = [
@@ -575,6 +601,8 @@ def build_still_command(width, height, jpeg_quality):
             "--immediate",
             "--encoding", "jpg"
         ]
+        if camera_index is not None:
+            cmd.extend(["--camera", str(camera_index)])
         if ROTATION in [0, 180]:
             cmd.extend(["--rotation", str(ROTATION)])
         elif ROTATION in [90, 270]:
@@ -627,14 +655,15 @@ def append_rpicam_tuning(cmd):
     cmd.extend(["--contrast", str(CAMERA_CONTRAST)])
     cmd.extend(["--sharpness", str(CAMERA_SHARPNESS)])
 
-def trigger_spray_locally(duration):
+def trigger_spray_locally(duration, camera_index=None):
     import urllib.request
     import urllib.parse
 
     try:
         encoded_roi = urllib.parse.quote(VIDEO_ROI) if VIDEO_ROI else ''
-        url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}'.format(duration, VIDEO_ROTATION, encoded_roi)
-        req = urllib.request.Request(url, method='POST')
+        camera_part = '&camera={0}'.format(camera_index) if camera_index is not None else ''
+        url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}{3}'.format(duration, VIDEO_ROTATION, encoded_roi, camera_part)
+        req = urllib.request.Request(url, headers=authenticated_headers(), method='POST')
         with urllib.request.urlopen(req, timeout=25):
             print("[Trigger] Spray triggered successfully with duration {0}s.".format(duration))
             return True
@@ -657,7 +686,7 @@ def report_spray_confirm(result, image_filename, duration):
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'},
+            headers=authenticated_headers({'Content-Type': 'application/json'}),
             method='POST'
         )
         with urllib.request.urlopen(req, timeout=8) as response:
@@ -674,6 +703,8 @@ def capture_image():
     fetch_config_from_mac()
     config_ms = (time.time() - fetch_started_at) * 1000
     local_time = get_eastern_time()
+    camera_period = get_camera_period(local_time)
+    camera_index = get_active_camera_index(local_time)
     now_seconds = time.time()
     should_save = (last_review_save_time <= 0.0) or (now_seconds - last_review_save_time >= SAVE_INTERVAL_SECONDS)
     filename = "img_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S"))
@@ -682,15 +713,17 @@ def capture_image():
     capture_height = REVIEW_HEIGHT if should_save else ANALYSIS_HEIGHT
     jpeg_quality = REVIEW_JPEG_QUALITY if should_save else ANALYSIS_JPEG_QUALITY
 
-    cmd = build_still_command(capture_width, capture_height, jpeg_quality)
+    cmd = build_still_command(capture_width, capture_height, jpeg_quality, camera_index=camera_index)
 
-    print("[{0}] Capturing to memory: {1} ({2}x{3} q{4}, save={5})".format(
+    print("[{0}] Capturing to memory: {1} ({2}x{3} q{4}, save={5}, period={6}, camera={7})".format(
         local_time.strftime("%Y-%m-%d %H:%M:%S"),
         filename,
         capture_width,
         capture_height,
         jpeg_quality,
-        1 if should_save else 0
+        1 if should_save else 0,
+        camera_period,
+        camera_index
     ))
 
     try:
@@ -717,6 +750,8 @@ def capture_image():
                 'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
                 'status': 'motion_skipped',
                 'filename': filename,
+                'camera_period': camera_period,
+                'camera_index': camera_index,
                 'should_save': should_save,
                 'sd_write': False,
                 'file_bytes': file_bytes,
@@ -731,7 +766,7 @@ def capture_image():
             })
             return
 
-        result = check_for_squirrel(filename, img_data, should_save=should_save)
+        result = check_for_squirrel(filename, img_data, should_save=should_save, camera_period=camera_period)
         last_analysis_sent_time = now_seconds
         is_squirrel = result.get('detected_squirrel', result.get('is_squirrel', False))
         should_spray = result.get('should_spray', result.get('is_squirrel', False))
@@ -739,7 +774,7 @@ def capture_image():
         spray_duration = result.get('spray_duration', 3.0)
         if should_spray:
             print("[Inference] SQUIRREL CONFIRMED! Confidence: {0:.1f}%. Triggering spray for {1}s.".format(confidence * 100, spray_duration))
-            if trigger_spray_locally(spray_duration):
+            if trigger_spray_locally(spray_duration, camera_index=camera_index):
                 report_spray_confirm(result, filename, spray_duration)
         else:
             decision = result.get('spray_decision', {})
@@ -766,6 +801,8 @@ def capture_image():
             'captured_at': local_time.strftime("%Y-%m-%d %H:%M:%S"),
             'status': 'analyzed',
             'filename': filename,
+            'camera_period': camera_period,
+            'camera_index': camera_index,
             'should_save': should_save,
             'saved_for_review': should_save and confidence > 0.0,
             'sd_write': should_save and confidence <= 0.0,
@@ -794,6 +831,8 @@ def capture_image():
         print("Error processing captured image: {0}".format(e))
 
 def main():
+    if not DEVICE_API_TOKEN:
+        raise RuntimeError("DEVICE_API_TOKEN is required for authenticated device communication")
     print("Starting Squirrel Soaker 9001 capture & inference loop...")
     print("Analysis interval: {0}s, save interval: {1}s, daylight mode: {2}".format(
         ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, DAYLIGHT_MODE
@@ -804,25 +843,16 @@ def main():
             fetch_config_from_mac()
             local_time = get_eastern_time()
             daylight_start, daylight_end, daylight_source = get_daylight_window(local_time)
-            if is_daylight(local_time):
-                started_at = time.time()
-                capture_image()
-                elapsed = time.time() - started_at
-                time.sleep(max(0.0, ANALYSIS_INTERVAL_SECONDS - elapsed))
-            else:
-                now = get_eastern_time()
-                target, target_source = get_next_daylight_start(now)
-                seconds_to_wait = (target - now).total_seconds()
-                print("[{0}] Nighttime ({1}: {2}-{3}). Sleeping for {4:.1f} hours until {5} ({6})...".format(
-                    now.strftime("%Y-%m-%d %H:%M:%S"),
-                    daylight_source,
-                    daylight_start.strftime("%H:%M"),
-                    daylight_end.strftime("%H:%M"),
-                    seconds_to_wait / 3600.0,
-                    target.strftime("%Y-%m-%d %H:%M:%S"),
-                    target_source
-                ))
-                time.sleep(min(seconds_to_wait, 3600))
+            print("[Schedule] {0} mode active ({1}: {2}-{3}).".format(
+                get_camera_period(local_time),
+                daylight_source,
+                daylight_start.strftime("%H:%M"),
+                daylight_end.strftime("%H:%M")
+            ))
+            started_at = time.time()
+            capture_image()
+            elapsed = time.time() - started_at
+            time.sleep(max(0.0, ANALYSIS_INTERVAL_SECONDS - elapsed))
         except KeyboardInterrupt:
             print("\nStopping capture loop.")
             break

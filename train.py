@@ -9,6 +9,34 @@ from torch.utils.data import DataLoader, random_split
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+
+class SafeImageFolder(datasets.ImageFolder):
+    def __init__(self, root):
+        super().__init__(root)
+        self.samples = [
+            (path, label)
+            for path, label in self.samples
+            if os.path.exists(path)
+        ]
+        self.imgs = self.samples
+
+    def __getitem__(self, index):
+        attempts = 0
+        dataset_len = len(self.samples)
+        if dataset_len == 0:
+            raise IndexError("No training samples available")
+
+        while attempts < dataset_len:
+            try:
+                return super().__getitem__(index % dataset_len)
+            except (FileNotFoundError, OSError) as e:
+                path = self.samples[index % dataset_len][0]
+                print("Warning: skipping unreadable training image {0}: {1}".format(path, e), flush=True)
+                index += 1
+                attempts += 1
+
+        raise RuntimeError("All candidate training images were missing or unreadable")
+
 def train_model():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATASET_DIR = os.path.join(BASE_DIR, 'data', 'dataset')
@@ -47,7 +75,7 @@ def train_model():
         print("Error: Dataset directory {0} does not exist. Train aborted.".format(DATASET_DIR))
         sys.exit(1)
         
-    dataset = datasets.ImageFolder(DATASET_DIR)
+    dataset = SafeImageFolder(DATASET_DIR)
     classes = dataset.classes
     print("Classes found: {0}".format(classes))
     

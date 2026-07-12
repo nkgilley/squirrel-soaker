@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # test_solenoid.py
-# Simple script to test the MOSFET and 12V solenoid valve wiring.
+# Manual hardware script to test the MOSFET and 12V solenoid valve wiring.
 
 import time
 

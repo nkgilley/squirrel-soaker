@@ -16,4 +16,13 @@ services:
       - PUBLIC_BASE_URL=http://192.168.86.137
       - CAMERA_SOURCE=pi
       - SPRAY_CONTROLLER_TYPE=pi
+      - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:?Set DEVICE_API_TOKEN in .env}
+      - MAX_SPRAY_DURATION_SECONDS=${MAX_SPRAY_DURATION_SECONDS:-10}
+      - MAX_CONTENT_LENGTH_MB=${MAX_CONTENT_LENGTH_MB:-100}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/api/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped

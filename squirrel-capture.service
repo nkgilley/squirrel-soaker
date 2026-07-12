@@ -9,6 +9,7 @@ Type=simple
 User=nolan
 WorkingDirectory=/home/nolan/squirrel_soaker
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/nolan/squirrel_soaker/device.env
 ExecStart=/usr/bin/python3 -u /home/nolan/squirrel_soaker/capture.py
 Restart=always
 RestartSec=10

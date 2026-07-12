@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "squirrel-soaker"
+version = "0.1.0.dev0"
+description = "AI-assisted squirrel detection and water-spray controller"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.15.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-config --strict-markers"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [".git", ".venv", "data"]
+
+[tool.ruff.lint]
+# Begin with correctness checks that the legacy application can satisfy. The
+# modularization phase will expand this baseline to the full recommended set.
+select = ["E9", "F63", "F7", "F82"]

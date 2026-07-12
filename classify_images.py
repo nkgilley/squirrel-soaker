@@ -9,7 +9,11 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, D
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 import datetime
 from collections import deque
+from functools import wraps
 from PIL import ImageFile
+
+from squirrel_safety import DetectionGate, bounded_duration, device_auth_headers, device_token_matches
+from squirrel_settings import public_device_settings, validate_settings_patch
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 app = Flask(__name__)
@@ -171,11 +175,29 @@ model_classes = []
 device = None
 active_model_type = None  # 'resnet' or 'yolo'
 active_model_name = None
+model_lock = threading.RLock()
 
-def load_active_model():
+
+def with_model_lock(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with model_lock:
+            return func(*args, **kwargs)
+    return wrapper
+
+def resolve_model_for_period(settings, camera_period=None):
+    period = str(camera_period or '').strip().lower()
+    if period == 'night':
+        return settings.get('night_model') or settings.get('active_model') or default_settings['active_model']
+    if period == 'day':
+        return settings.get('day_model') or settings.get('active_model') or default_settings['active_model']
+    return settings.get('active_model') or default_settings['active_model']
+
+@with_model_lock
+def load_active_model(model_name=None):
     global model, model_classes, device, active_model_type, active_model_name
     settings = load_settings()
-    active_model_name = settings.get('active_model', 'yolov8n-oiv7.pt')
+    active_model_name = model_name or settings.get('active_model', 'yolov8n-oiv7.pt')
     log_message("Loading active model: {0}".format(active_model_name))
 
     # Select device
@@ -258,12 +280,18 @@ def model_predict_resnet_image(img):
         is_squirrel = (class_name == 'squirrel')
         return is_squirrel, confidence.item()
 
-def model_predict_bytes(img_data):
+def ensure_model_loaded(model_name=None):
+    if model_name and model_name != active_model_name:
+        load_active_model(model_name)
+    elif model is None:
+        load_active_model(model_name)
+    return model is not None
+
+@with_model_lock
+def model_predict_bytes(img_data, model_name=None):
     global model, active_model_type
-    if model is None:
-        load_active_model()
-        if model is None:
-            return False, 0.0
+    if not ensure_model_loaded(model_name):
+        return False, 0.0
     if active_model_type != 'resnet':
         return None
     try:
@@ -275,12 +303,11 @@ def model_predict_bytes(img_data):
         log_message("Error during in-memory prediction: {0}".format(e))
         return False, 0.0
 
-def model_predict(filepath):
+@with_model_lock
+def model_predict(filepath, model_name=None):
     global model, model_classes, device, active_model_type, active_model_name
-    if model is None:
-        load_active_model()
-        if model is None:
-            return False, 0.0
+    if not ensure_model_loaded(model_name):
+        return False, 0.0
 
     try:
         if active_model_type == 'yolo':
@@ -327,8 +354,37 @@ load_env_file()
 # --- Configuration ---
 PI_IP = os.environ.get('PI_IP', '192.168.86.107')
 PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'http://192.168.86.137')
+DEVICE_API_TOKEN = os.environ.get('DEVICE_API_TOKEN', '').strip()
+MAX_SPRAY_DURATION_SECONDS = float(os.environ.get('MAX_SPRAY_DURATION_SECONDS', '10.0'))
+MAX_CONTENT_LENGTH_MB = int(os.environ.get('MAX_CONTENT_LENGTH_MB', '100'))
+MAX_IMAGE_UPLOAD_BYTES = int(os.environ.get('MAX_IMAGE_UPLOAD_BYTES', str(20 * 1024 * 1024)))
+MAX_VIDEO_UPLOAD_BYTES = int(os.environ.get('MAX_VIDEO_UPLOAD_BYTES', str(MAX_CONTENT_LENGTH_MB * 1024 * 1024)))
 DEFAULT_STREAM_URL = os.environ.get('STREAM_URL', 'http://{0}:8554/stream.mjpg'.format(PI_IP))
 DEFAULT_SNAPSHOT_URL = os.environ.get('SNAPSHOT_URL', 'http://localhost:5050/snapshot/v3.jpg')
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH_MB * 1024 * 1024
+
+
+def require_device_auth(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if not device_token_matches(request.headers.get('Authorization'), DEVICE_API_TOKEN):
+            return jsonify({'status': 'error', 'message': 'unauthorized device request'}), 401
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def authenticated_device_headers(extra=None):
+    headers = device_auth_headers(DEVICE_API_TOKEN)
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    if request.path.startswith('/api/'):
+        return jsonify({'status': 'error', 'message': 'request body is too large'}), 413
+    return 'Request body is too large', 413
 
 RAW_DIR = os.path.join(BASE_DIR, 'data', 'raw')
 DATASET_DIR = os.path.join(BASE_DIR, 'data', 'dataset')
@@ -342,6 +398,15 @@ os.makedirs(PREDICT_TMP_DIR, exist_ok=True)
 
 AUTOMATION_STATUS_FILE = os.path.join(BASE_DIR, 'data', 'automation_status.json')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'data', 'settings.json')
+settings_file_lock = threading.RLock()
+
+
+def with_settings_lock(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with settings_file_lock:
+            return func(*args, **kwargs)
+    return wrapper
 
 default_settings = {
     'capture_interval': 5,
@@ -379,6 +444,8 @@ default_settings = {
     'camera_contrast': 1.0,
     'camera_sharpness': 1.0,
     'camera_tuning_enabled': False,
+    'day_camera_index': 0,
+    'night_camera_index': 1,
     'confidence_threshold': 0.70,
     'spray_mode': 'auto',
     'spray_confirmation_timeout_seconds': 180,
@@ -402,6 +469,8 @@ default_settings = {
     'retention_days_trash': 1,
     'retention_days_videos': 14,
     'active_model': 'yolov8n-oiv7.pt',
+    'day_model': 'yolov8n-oiv7.pt',
+    'night_model': 'yolov8n-oiv7.pt',
     'camera_source': os.environ.get('CAMERA_SOURCE', 'pi'),
     'advanced_camera_sources_enabled': False,
     'pi_inference_enabled': False,
@@ -417,6 +486,7 @@ def setting_enabled(value):
         return value.strip().lower() in ('1', 'true', 'yes', 'on')
     return bool(value)
 
+@with_settings_lock
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -430,6 +500,10 @@ def load_settings():
                     merged['analysis_interval'] = int(merged.get('capture_interval', default_settings['analysis_interval']))
                 if 'save_interval' not in settings:
                     merged['save_interval'] = 30
+                if 'day_model' not in settings:
+                    merged['day_model'] = merged.get('active_model', default_settings['active_model'])
+                if 'night_model' not in settings:
+                    merged['night_model'] = merged.get('active_model', default_settings['active_model'])
                 return merged
         except Exception as e:
             print("Error loading settings:", e)
@@ -437,13 +511,26 @@ def load_settings():
     settings['enable_rtsp'] = setting_enabled(settings.get('enable_rtsp', True))
     return settings.copy()
 
+@with_settings_lock
 def save_settings(settings):
+    import json
+
+    temp_path = "{0}.tmp-{1}".format(SETTINGS_FILE, uuid.uuid4().hex)
     try:
-        with open(SETTINGS_FILE, 'w') as f:
-            import json
+        with open(temp_path, 'w') as f:
             json.dump(settings, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, SETTINGS_FILE)
     except Exception as e:
         print("Error saving settings:", e)
+        raise
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 def make_live_frame_jpeg(img_data, settings=None):
     try:
@@ -472,8 +559,7 @@ latest_pi_status = {}
 latest_predict_metrics = {}
 health_history = deque(maxlen=720)
 telemetry_lock = threading.Lock()
-detection_history = deque()
-detection_history_lock = threading.Lock()
+detection_gate = DetectionGate()
 pending_spray_confirmation = None
 pending_spray_lock = threading.Lock()
 
@@ -512,28 +598,15 @@ def get_spray_decision(is_squirrel, confidence, settings, now_time=None):
     required_hits = max(1, int(settings.get('spray_decision_required_hits', 2)))
     average_threshold = float(settings.get('spray_decision_average_confidence', threshold))
 
-    with detection_history_lock:
-        while detection_history and now_time - detection_history[0]['t'] > window_seconds:
-            detection_history.popleft()
-
-        if is_squirrel and confidence >= threshold:
-            detection_history.append({'t': now_time, 'confidence': confidence})
-
-        hits = list(detection_history)
-        avg_confidence = sum(hit['confidence'] for hit in hits) / len(hits) if hits else 0.0
-        ready = len(hits) >= required_hits and avg_confidence >= average_threshold
-
-        if ready:
-            detection_history.clear()
-
-    return {
-        'ready': ready,
-        'hits': len(hits),
-        'required_hits': required_hits,
-        'window_seconds': window_seconds,
-        'average_confidence': avg_confidence,
-        'average_threshold': average_threshold
-    }
+    return detection_gate.evaluate(
+        is_squirrel=is_squirrel,
+        confidence=confidence,
+        threshold=threshold,
+        window_seconds=window_seconds,
+        required_hits=required_hits,
+        average_threshold=average_threshold,
+        now=now_time,
+    )
 
 def get_local_base_url():
     settings = load_settings()
@@ -809,8 +882,16 @@ def log_blast(blast_type, confidence=None, model_name=None, image_filename=None,
 
 def get_current_spray_duration():
     settings = load_settings()
-    std_duration = settings.get('spray_duration', 3.0)
-    long_duration = settings.get('long_spray_duration', 5.0)
+    std_duration = bounded_duration(
+        settings.get('spray_duration', 3.0),
+        default=3.0,
+        maximum=MAX_SPRAY_DURATION_SECONDS,
+    )
+    long_duration = bounded_duration(
+        settings.get('long_spray_duration', 5.0),
+        default=5.0,
+        maximum=MAX_SPRAY_DURATION_SECONDS,
+    )
     threshold_hours = settings.get('long_spray_threshold_hours', 2.0)
 
     try:
@@ -1030,7 +1111,11 @@ def extract_false_alarm_training_frames(video_name, max_frames=6):
             if not cv2.imwrite(out_path, frame):
                 continue
 
-            captured_at = get_video_timestamp(safe_name) or datetime.datetime.now()
+            # Retention for generated hard negatives should start when we create
+            # the training frame, not when the original video was recorded. Old
+            # false-alarm videos can otherwise produce frames that are deleted
+            # by storage cleanup while retraining is still reading the dataset.
+            captured_at = datetime.datetime.now()
             try:
                 db_img = db_session.query(DBImage).filter_by(filename=out_name).first()
                 if not db_img:
@@ -3886,6 +3971,8 @@ HTML_TEMPLATE = """
                                 ${settingsSelect('settings-video-rotation', 'Video Rotation', [['0', '0'], ['180', '180']])}
                                 ${settingsField('settings-roi', 'Still ROI', 'text', 'placeholder="x,y,w,h"')}
                                 ${settingsField('settings-video-roi', 'Video ROI', 'text', 'placeholder="x,y,w,h"')}
+                                ${settingsField('settings-day-camera-index', 'Day Camera Index', 'number', 'min="0" max="3" step="1"', 'Normal Camera Module 3.')}
+                                ${settingsField('settings-night-camera-index', 'Night Camera Index', 'number', 'min="0" max="3" step="1"', 'NoIR Camera Module 3.')}
                                 <div class="settings-field settings-field-full">
                                     ${settingsCheckbox('settings-motion-enabled', 'Enable motion prefilter')}
                                 </div>
@@ -3932,6 +4019,8 @@ HTML_TEMPLATE = """
                             <h3>Model</h3>
                             <div class="settings-fields">
                                 ${settingsSelect('settings-active-model', 'Active Model', [])}
+                                ${settingsSelect('settings-day-model', 'Day Model', [])}
+                                ${settingsSelect('settings-night-model', 'Night Model', [])}
                                 ${settingsField('settings-gemini-key', 'Gemini API Key', 'password', 'placeholder="Optional auto-label key"')}
                                 <div class="settings-field settings-field-full">
                                     <label for="settings-checkpoint-name">Save Checkpoint</label>
@@ -4033,6 +4122,21 @@ HTML_TEMPLATE = """
             }
         }
 
+        function populateModelSelect(id, models, selectedModel) {
+            const select = document.getElementById(id);
+            if (!select) return;
+            select.innerHTML = '';
+            (models || []).forEach(modelName => {
+                const opt = document.createElement('option');
+                opt.value = modelName;
+                opt.textContent = modelName;
+                if (modelName === selectedModel) {
+                    opt.selected = true;
+                }
+                select.appendChild(opt);
+            });
+        }
+
         async function saveCheckpoint() {
             const nameInput = document.getElementById('settings-checkpoint-name');
             if (!nameInput) return;
@@ -4053,20 +4157,9 @@ HTML_TEMPLATE = """
                     alert("Checkpoint saved successfully!");
                     nameInput.value = '';
                     if (data.available_models) {
-                        const activeModelSelect = document.getElementById('settings-active-model');
-                        if (activeModelSelect) {
-                            const currentSelected = activeModelSelect.value;
-                            activeModelSelect.innerHTML = '';
-                            data.available_models.forEach(modelName => {
-                                const opt = document.createElement('option');
-                                opt.value = modelName;
-                                opt.textContent = modelName;
-                                if (modelName === currentSelected || modelName === data.filename) {
-                                    opt.selected = true;
-                                }
-                                activeModelSelect.appendChild(opt);
-                            });
-                        }
+                        populateModelSelect('settings-active-model', data.available_models, data.filename);
+                        populateModelSelect('settings-day-model', data.available_models, loadedSettings.day_model || data.filename);
+                        populateModelSelect('settings-night-model', data.available_models, loadedSettings.night_model || data.filename);
                     }
                 } else {
                     alert("Error saving checkpoint: " + data.message);
@@ -4097,7 +4190,10 @@ HTML_TEMPLATE = """
                         <pre id="diagnostics-output" style="white-space: pre-wrap; overflow: auto; max-height: 520px; color: var(--text-primary); font-size: 0.82rem; line-height: 1.45; margin: 0;">Loading...</pre>
                     </div>
                     <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                        <button class="btn" style="justify-content: center; background-color: var(--color-sync); color: white;" onclick="runPiDiagnosticAction('test_camera')">Test Camera Capture</button>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem;">
+                            <button class="btn" style="justify-content: center; background-color: var(--color-sync); color: white;" onclick="runPiDiagnosticAction('test_camera', 'day')">Test Day Camera</button>
+                            <button class="btn" style="justify-content: center; background-color: var(--color-sync); color: white;" onclick="runPiDiagnosticAction('test_camera', 'night')">Test NoIR Camera</button>
+                        </div>
                         <button class="btn" style="justify-content: center; background-color: var(--color-add); color: white;" onclick="runPiDiagnosticAction('test_video')">Record 1s Test Video</button>
                         <button class="btn" style="justify-content: center; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="runPiDiagnosticAction('sync')">Sync SD Backlog</button>
                         <button class="btn" style="justify-content: center; background-color: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="runPiDiagnosticAction('benchmark')">Run Pi Benchmark</button>
@@ -4122,18 +4218,26 @@ HTML_TEMPLATE = """
             if (!output) return;
             try {
                 const res = await fetch('/api/pi/diagnostics');
-                const data = await res.json();
+                const body = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(body);
+                } catch (parseError) {
+                    throw new Error('Server returned an invalid response (HTTP ' + res.status + ')');
+                }
                 output.textContent = JSON.stringify(data, null, 2);
             } catch (e) {
                 output.textContent = 'Could not load Pi diagnostics: ' + e;
             }
         }
 
-        async function runPiDiagnosticAction(action) {
+        async function runPiDiagnosticAction(action, cameraPeriod = null) {
             const status = document.getElementById('diagnostics-action-status');
-            if (status) status.textContent = 'Running ' + action + '...';
+            const cameraLabel = cameraPeriod === 'night' ? 'NoIR camera' : (cameraPeriod === 'day' ? 'day camera' : action);
+            if (status) status.textContent = 'Running ' + cameraLabel + ' test...';
             try {
-                const res = await fetch('/api/pi/' + action, { method: 'POST' });
+                const query = cameraPeriod ? '?camera_period=' + encodeURIComponent(cameraPeriod) : '';
+                const res = await fetch('/api/pi/' + action + query, { method: 'POST' });
                 const data = await res.json();
                 renderPiDiagnosticMedia(action, data);
                 if (status) status.textContent = JSON.stringify(piDiagnosticDisplayData(data), null, 2);
@@ -4234,6 +4338,8 @@ HTML_TEMPLATE = """
                     setSettingValue('settings-roi', loadedSettings.camera_roi);
                     setSettingValue('settings-video-rotation', loadedSettings.video_rotation ?? loadedSettings.camera_rotation ?? 0);
                     setSettingValue('settings-video-roi', loadedSettings.video_roi || '');
+                    setSettingValue('settings-day-camera-index', loadedSettings.day_camera_index ?? 0);
+                    setSettingValue('settings-night-camera-index', loadedSettings.night_camera_index ?? 1);
                     setSettingValue('settings-camera-awb', loadedSettings.camera_awb || 'auto');
                     setSettingValue('settings-camera-exposure', loadedSettings.camera_exposure || 'normal');
                     setSettingValue('settings-camera-metering', loadedSettings.camera_metering || 'centre');
@@ -4271,22 +4377,9 @@ HTML_TEMPLATE = """
                     setSettingValue('settings-rtsp-motion-interval', loadedSettings.rtsp_motion_interval_minutes || 5);
                     updateAdvancedCameraSourcesVisibility();
 
-                    // Populate active model dropdown
-                    const activeModelSelect = document.getElementById('settings-active-model');
-                    if (activeModelSelect) {
-                        activeModelSelect.innerHTML = '';
-                        if (data.available_models && data.available_models.length) {
-                            data.available_models.forEach(modelName => {
-                                const opt = document.createElement('option');
-                                opt.value = modelName;
-                                opt.textContent = modelName;
-                                if (modelName === data.settings.active_model) {
-                                    opt.selected = true;
-                                }
-                                activeModelSelect.appendChild(opt);
-                            });
-                        }
-                    }
+                    populateModelSelect('settings-active-model', data.available_models, data.settings.active_model);
+                    populateModelSelect('settings-day-model', data.available_models, data.settings.day_model || data.settings.active_model);
+                    populateModelSelect('settings-night-model', data.available_models, data.settings.night_model || data.settings.active_model);
 
                     // Render model accuracies
                     if (data.model_accuracies) {
@@ -4343,6 +4436,8 @@ HTML_TEMPLATE = """
             const camera_roi = getSettingValue('settings-roi', loadedSettings.camera_roi || '');
             const video_rotation = parseInt(getSettingValue('settings-video-rotation', loadedSettings.video_rotation ?? loadedSettings.camera_rotation ?? 0));
             const video_roi = getSettingValue('settings-video-roi', loadedSettings.video_roi || '');
+            const day_camera_index = parseInt(getSettingValue('settings-day-camera-index', loadedSettings.day_camera_index ?? 0));
+            const night_camera_index = parseInt(getSettingValue('settings-night-camera-index', loadedSettings.night_camera_index ?? 1));
             const camera_awb = getSettingValue('settings-camera-awb', loadedSettings.camera_awb || 'auto');
             const camera_exposure = getSettingValue('settings-camera-exposure', loadedSettings.camera_exposure || 'normal');
             const camera_metering = getSettingValue('settings-camera-metering', loadedSettings.camera_metering || 'centre');
@@ -4374,6 +4469,8 @@ HTML_TEMPLATE = """
             const pi_inference_enabled = false;
             const pi_inference_shadow_mode = true;
             const active_model = getSettingValue('settings-active-model', loadedSettings.active_model || '');
+            const day_model = getSettingValue('settings-day-model', loadedSettings.day_model || active_model);
+            const night_model = getSettingValue('settings-night-model', loadedSettings.night_model || active_model);
 
             const advanced_camera_sources_enabled = false;
             const camera_source = 'pi';
@@ -4415,6 +4512,8 @@ HTML_TEMPLATE = """
                         camera_roi,
                         video_rotation,
                         video_roi,
+                        day_camera_index,
+                        night_camera_index,
                         camera_awb,
                         camera_exposure,
                         camera_metering,
@@ -4446,6 +4545,8 @@ HTML_TEMPLATE = """
                         pi_inference_enabled,
                         pi_inference_shadow_mode,
                         active_model,
+                        day_model,
+                        night_model,
                         advanced_camera_sources_enabled,
                         camera_source,
                         snapshot_url,
@@ -4462,19 +4563,9 @@ HTML_TEMPLATE = """
                     }, 4000);
 
                     if (data.available_models) {
-                        const activeModelSelect = document.getElementById('settings-active-model');
-                        if (activeModelSelect) {
-                            activeModelSelect.innerHTML = '';
-                            data.available_models.forEach(modelName => {
-                                const opt = document.createElement('option');
-                                opt.value = modelName;
-                                opt.textContent = modelName;
-                                if (modelName === data.settings.active_model) {
-                                    opt.selected = true;
-                                }
-                                activeModelSelect.appendChild(opt);
-                            });
-                        }
+                        populateModelSelect('settings-active-model', data.available_models, data.settings.active_model);
+                        populateModelSelect('settings-day-model', data.available_models, data.settings.day_model || data.settings.active_model);
+                        populateModelSelect('settings-night-model', data.available_models, data.settings.night_model || data.settings.active_model);
                     }
                     if (data.model_accuracies) {
                         renderAccuraciesTable(data.model_accuracies);
@@ -4527,7 +4618,14 @@ HTML_TEMPLATE = """
                             <div style="font-size: 0.8rem; text-transform: uppercase; color: #34d399; font-weight: 700;">New model checkpoint</div>
                             <div id="trained-model-name" style="font-family: monospace; color: var(--text-primary); margin-top: 0.25rem;"></div>
                         </div>
-                        <button id="trained-model-use-btn" class="btn" style="background-color: var(--color-add); color: white;" onclick="useTrainedModel()">Use This Model</button>
+                        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                            <select id="trained-model-target" aria-label="Model activation target" style="min-width: 130px;">
+                                <option value="both">Day and night</option>
+                                <option value="day">Day only</option>
+                                <option value="night">Night only</option>
+                            </select>
+                            <button id="trained-model-use-btn" class="btn" style="background-color: var(--color-add); color: white;" onclick="useTrainedModel()">Use This Model</button>
+                        </div>
                     </div>
                 </div>
 
@@ -4643,15 +4741,14 @@ HTML_TEMPLATE = """
 
             if (latestTrainedModel.should_prompt && lastPromptedTrainedModel !== latestTrainedModel.filename) {
                 lastPromptedTrainedModel = latestTrainedModel.filename;
-                if (confirm(`Training saved ${latestTrainedModel.filename}. Start using this model now?`)) {
-                    useTrainedModel();
-                }
+                alert(`Training saved ${latestTrainedModel.filename}. Choose whether to use it for day, night, or both.`);
             }
         }
 
         async function useTrainedModel() {
             if (!latestTrainedModel || !latestTrainedModel.filename) return;
             const btn = document.getElementById('trained-model-use-btn');
+            const target = document.getElementById('trained-model-target')?.value || 'both';
             if (btn) {
                 btn.disabled = true;
                 btn.innerText = 'Activating...';
@@ -4660,7 +4757,7 @@ HTML_TEMPLATE = """
                 const res = await fetch('/api/train/use_model', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: latestTrainedModel.filename })
+                    body: JSON.stringify({ filename: latestTrainedModel.filename, target })
                 });
                 const data = await res.json();
                 if (data.status !== 'success') {
@@ -6461,24 +6558,33 @@ def api_settings():
     if request.method == 'POST':
         data = request.get_json() or {}
         settings = load_settings()
-        old_model = settings.get('active_model')
+        old_models = (
+            settings.get('active_model'),
+            settings.get('day_model'),
+            settings.get('night_model')
+        )
         try:
-            for k in default_settings.keys():
-                if k in data:
-                    if isinstance(default_settings[k], bool):
-                        settings[k] = setting_enabled(data[k])
-                    elif isinstance(default_settings[k], int):
-                        settings[k] = int(data[k])
-                    elif isinstance(default_settings[k], float):
-                        settings[k] = float(data[k])
-                    else:
-                        settings[k] = data[k]
+            validated, validation_errors = validate_settings_patch(
+                data,
+                default_settings,
+                maximum_spray_seconds=MAX_SPRAY_DURATION_SECONDS,
+            )
+            if validation_errors:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Invalid settings',
+                    'errors': validation_errors,
+                }), 400
+            settings.update(validated)
             save_settings(settings)
 
-            # If active model changed, load the new active model
-            new_model = settings.get('active_model')
-            if new_model != old_model:
-                load_active_model()
+            new_models = (
+                settings.get('active_model'),
+                settings.get('day_model'),
+                settings.get('night_model')
+            )
+            if new_models != old_models:
+                load_active_model(resolve_model_for_period(settings))
 
             import threading
             def run_once():
@@ -6521,6 +6627,15 @@ def api_settings():
             'available_models': get_available_models(),
             'model_accuracies': get_model_accuracies()
         })
+
+
+@app.route('/api/device/config')
+@require_device_auth
+def api_device_config():
+    return jsonify({
+        'status': 'success',
+        'settings': public_device_settings(load_settings()),
+    })
 
 @app.route('/api/settings/save_model', methods=['POST'])
 def save_model_checkpoint():
@@ -6866,7 +6981,7 @@ def sync():
 
             try:
                 import urllib.request
-                req = urllib.request.Request(pi_sync_url, method='POST')
+                req = urllib.request.Request(pi_sync_url, headers=authenticated_device_headers(), method='POST')
                 with urllib.request.urlopen(req, timeout=5) as response:
                     response.read()
                 pi_sync_success = True
@@ -6965,6 +7080,8 @@ def api_confirm_spray():
     global last_spray_time
     data = request.get_json(silent=True) or {}
     confirm_id = data.get('id') or request.args.get('id')
+    if not confirm_id:
+        return jsonify({'status': 'error', 'message': 'Confirmation ID is required'}), 400
     pending = get_pending_spray_confirmation()
     if not pending:
         return jsonify({'status': 'error', 'message': 'No pending spray confirmation'}), 404
@@ -7007,6 +7124,7 @@ def api_dismiss_spray():
     return jsonify({'status': 'success', 'dismissed': True})
 
 @app.route('/api/spray_confirm', methods=['POST'])
+@require_device_auth
 def spray_confirm():
     global last_spray_time
     data = request.get_json(silent=True) or {}
@@ -7057,6 +7175,7 @@ def get_automation_status():
     })
 
 @app.route('/api/pi_status', methods=['POST'])
+@require_device_auth
 def pi_status():
     global latest_pi_status
     data = request.get_json(silent=True) or {}
@@ -7187,9 +7306,7 @@ def api_health():
         latest_frame_size = len(latest_frame_jpeg) if latest_frame_jpeg else 0
 
     status = 'ok'
-    if settings.get('camera_source', 'pi') == 'pi' and not daylight['is_daylight']:
-        status = 'sleeping'
-    elif frame_age is None or frame_age > 300:
+    if frame_age is None or frame_age > 300:
         status = 'offline'
     elif frame_age > max(60, int(settings.get('analysis_interval', 5)) * 4):
         status = 'stale'
@@ -7200,6 +7317,9 @@ def api_health():
         'pending_spray': get_pending_spray_confirmation(),
         'active_model': active_model_name,
         'active_model_type': active_model_type,
+        'camera_period': 'day' if daylight['is_daylight'] else 'night',
+        'day_model': settings.get('day_model'),
+        'night_model': settings.get('night_model'),
         'latest_frame_age_seconds': frame_age,
         'latest_frame_size_bytes': latest_frame_size,
         'last_spray_age_seconds': time.time() - last_spray_time if last_spray_time else None,
@@ -7240,6 +7360,8 @@ def api_health():
             'camera_contrast': settings.get('camera_contrast'),
             'camera_sharpness': settings.get('camera_sharpness'),
             'camera_tuning_enabled': settings.get('camera_tuning_enabled'),
+            'day_camera_index': settings.get('day_camera_index'),
+            'night_camera_index': settings.get('night_camera_index'),
             'camera_source': settings.get('camera_source'),
             'advanced_camera_sources_enabled': settings.get('advanced_camera_sources_enabled'),
             'pi_inference_enabled': settings.get('pi_inference_enabled'),
@@ -7252,7 +7374,10 @@ def api_health():
             'spray_decision_window_seconds': settings.get('spray_decision_window_seconds'),
             'spray_decision_average_confidence': settings.get('spray_decision_average_confidence'),
             'spray_controller_type': settings.get('spray_controller_type'),
-            'spray_controller_url': settings.get('spray_controller_url')
+            'spray_controller_url': settings.get('spray_controller_url'),
+            'active_model': settings.get('active_model'),
+            'day_model': settings.get('day_model'),
+            'night_model': settings.get('night_model')
         }
     })
 
@@ -7271,7 +7396,7 @@ def proxy_pi_request(path, method='GET', timeout=20):
     import urllib.request
     import json as jsonlib
     url = 'http://{0}:8080{1}'.format(PI_IP, path)
-    req = urllib.request.Request(url, method=method)
+    req = urllib.request.Request(url, headers=authenticated_device_headers(), method=method)
     with urllib.request.urlopen(req, timeout=timeout) as response:
         payload = response.read().decode('utf-8').strip()
         try:
@@ -7298,7 +7423,14 @@ def api_pi_diagnostics():
             'live_diagnostics': diagnostics
         })
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 502
+        with telemetry_lock:
+            pi_copy = dict(latest_pi_status)
+        return jsonify({
+            'status': 'degraded',
+            'message': 'Pi diagnostics unavailable: {0}'.format(e),
+            'last_reported_status': pi_copy,
+            'live_diagnostics': None
+        })
 
 @app.route('/api/pi/<action>', methods=['POST'])
 def api_pi_action(action):
@@ -7312,6 +7444,15 @@ def api_pi_action(action):
     if action not in action_map:
         return jsonify({'status': 'error', 'message': 'Unknown Pi action'}), 404
     path, timeout = action_map[action]
+    if action in ('test_camera', 'test_video'):
+        camera_period = request.args.get('camera_period', '').strip().lower()
+        if camera_period:
+            if camera_period not in ('day', 'night'):
+                return jsonify({'status': 'error', 'message': 'camera_period must be day or night'}), 400
+            settings = load_settings()
+            camera_key = 'night_camera_index' if camera_period == 'night' else 'day_camera_index'
+            separator = '&' if '?' in path else '?'
+            path += '{0}camera={1}'.format(separator, int(settings.get(camera_key, 1 if camera_period == 'night' else 0)))
     try:
         result = proxy_pi_request(path, method='POST', timeout=timeout)
         return jsonify({'status': 'success', 'action': action, 'result': result})
@@ -7444,14 +7585,24 @@ def use_trained_model():
         filename = os.path.basename(data.get('filename') or '')
         if not filename or filename not in get_available_models():
             return jsonify({'status': 'error', 'message': 'Model checkpoint not found'}), 404
+        target = str(data.get('target') or 'both').strip().lower()
+        if target not in ('day', 'night', 'both'):
+            return jsonify({'status': 'error', 'message': 'Target must be day, night, or both'}), 400
         settings = load_settings()
         settings['active_model'] = filename
+        if target in ('day', 'both'):
+            settings['day_model'] = filename
+        if target in ('night', 'both'):
+            settings['night_model'] = filename
         save_settings(settings)
-        load_active_model()
-        log_message("[Training] Activated trained model checkpoint {0}".format(filename))
+        load_active_model(resolve_model_for_period(settings))
+        log_message("[Training] Activated trained model checkpoint {0} for {1}".format(filename, target))
         return jsonify({
             'status': 'success',
             'active_model': filename,
+            'target': target,
+            'day_model': settings.get('day_model'),
+            'night_model': settings.get('night_model'),
             'available_models': get_available_models()
         })
     except Exception as e:
@@ -7486,6 +7637,7 @@ def clear_classifier_logs():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/upload_video', methods=['POST'])
+@require_device_auth
 def upload_video():
     filename = request.args.get('filename')
     if not filename:
@@ -7494,6 +7646,14 @@ def upload_video():
     lower_filename = filename.lower()
     if not (lower_filename.endswith('.h264') or lower_filename.endswith('.mp4')):
         return jsonify({'status': 'error', 'message': 'Unsupported video filename'}), 400
+    if request.content_length is not None and request.content_length > MAX_VIDEO_UPLOAD_BYTES:
+        return jsonify({'status': 'error', 'message': 'Video upload exceeds size limit'}), 413
+
+    video_data = request.get_data(cache=False)
+    if not video_data:
+        return jsonify({'status': 'error', 'message': 'Video upload is empty'}), 400
+    if len(video_data) > MAX_VIDEO_UPLOAD_BYTES:
+        return jsonify({'status': 'error', 'message': 'Video upload exceeds size limit'}), 413
 
     try:
         if lower_filename.endswith('.mp4'):
@@ -7502,9 +7662,9 @@ def upload_video():
             filepath = os.path.join(target_dir, filename)
             temp_path = filepath + '.tmp'
             with open(temp_path, 'wb') as f:
-                f.write(request.data)
+                f.write(video_data)
             os.replace(temp_path, filepath)
-            log_message("[Video Upload] Received MP4 video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
+            log_message("[Video Upload] Received MP4 video {0} from Pi ({1} bytes)".format(filename, len(video_data)))
             thumb_path = os.path.join(target_dir, os.path.splitext(filename)[0] + '.jpg')
             generate_video_thumbnail(filepath, thumb_path)
             if target_dir == VIDEOS_DIR:
@@ -7512,8 +7672,8 @@ def upload_video():
         else:
             filepath = os.path.join(RAW_DIR, filename)
             with open(filepath, 'wb') as f:
-                f.write(request.data)
-            log_message("[Video Upload] Received raw video {0} from Pi ({1} bytes)".format(filename, len(request.data)))
+                f.write(video_data)
+            log_message("[Video Upload] Received raw video {0} from Pi ({1} bytes)".format(filename, len(video_data)))
             process_synced_videos_async()
         return jsonify({'status': 'success'})
     except Exception as e:
@@ -7528,6 +7688,12 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         return {'status': 'error', 'message': 'No image data received'}, 400
 
     settings = load_settings()
+    camera_period = str(request.args.get('period') or request.args.get('camera_period') or '').strip().lower()
+    if camera_period not in ('day', 'night'):
+        camera_period = 'day' if get_daylight_status(settings).get('is_daylight') else 'night'
+    selected_model_name = resolve_model_for_period(settings, camera_period)
+    if selected_model_name != active_model_name:
+        load_active_model(selected_model_name)
 
     import datetime
     now_dt = datetime.datetime.now()
@@ -7551,14 +7717,14 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
 
     predict_started_at = time.time()
     if wrote_predict_file:
-        is_squirrel, confidence = model_predict(filepath)
+        is_squirrel, confidence = model_predict(filepath, selected_model_name)
     else:
-        prediction = model_predict_bytes(img_data)
+        prediction = model_predict_bytes(img_data, selected_model_name)
         if prediction is None:
             with open(filepath, 'wb') as f:
                 f.write(img_data)
             wrote_predict_file = True
-            is_squirrel, confidence = model_predict(filepath)
+            is_squirrel, confidence = model_predict(filepath, selected_model_name)
         else:
             is_squirrel, confidence = prediction
     model_ms = (time.time() - predict_started_at) * 1000
@@ -7658,7 +7824,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
                     decision['average_confidence'] * 100
                 ))
                 last_spray_time = current_time
-                log_blast('auto', confidence, active_model_name, filename if should_save_image else None, duration=duration)
+                log_blast('auto', confidence, selected_model_name, filename if should_save_image else None, duration=duration)
                 trigger_thread = threading.Thread(target=trigger_spray_controller, args=(duration,))
                 trigger_thread.daemon = True
                 trigger_thread.start()
@@ -7671,7 +7837,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
                 filename if should_save_image else None,
                 duration,
                 decision,
-                active_model_name
+                selected_model_name
             )
             log_message("[Confirm Spray] Spray threshold met; {0} confirmation {1} for {2}/{3} hits, avg {4:.1f}%.".format(
                 "sent" if notified else "using existing",
@@ -7712,6 +7878,8 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         'spray_mode': spray_mode,
         'pending_confirmation': pending_confirmation,
         'spray_decision': decision,
+        'camera_period': camera_period,
+        'model_name': selected_model_name,
         'confidence': confidence,
         'write_ms': round(write_ms, 1),
         'normalize_ms': round(normalize_ms, 1),
@@ -7752,13 +7920,19 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         'metrics': metrics,
         'spray_decision': decision,
         'automation_enabled': automation_enabled,
-        'active_model': active_model_name,
+        'active_model': selected_model_name,
+        'camera_period': camera_period,
         'spray_duration': duration
     }, 200
 
 @app.route('/api/predict', methods=['POST'])
+@require_device_auth
 def predict():
-    img_data = request.data
+    if request.content_length is not None and request.content_length > MAX_IMAGE_UPLOAD_BYTES:
+        return jsonify({'status': 'error', 'message': 'Image upload exceeds size limit'}), 413
+    img_data = request.get_data(cache=False)
+    if len(img_data) > MAX_IMAGE_UPLOAD_BYTES:
+        return jsonify({'status': 'error', 'message': 'Image upload exceeds size limit'}), 413
     is_test = request.args.get('test') == 'true'
     save_requested = setting_enabled(request.args.get('save', 'true'))
     result, status_code = process_camera_frame(
@@ -7819,9 +7993,11 @@ def trigger_spray_on_pi(duration):
         settings = load_settings()
         rotation = settings.get('video_rotation', settings.get('camera_rotation', 0))
         roi = settings.get('video_roi', '')
+        daylight = get_daylight_status(settings)
+        camera_index = settings.get('day_camera_index', 0) if daylight.get('is_daylight') else settings.get('night_camera_index', 1)
         encoded_roi = urllib.parse.quote(roi) if roi else ''
-        url = 'http://{}:8080/spray?duration={}&rotation={}&roi={}'.format(PI_IP, duration, rotation, encoded_roi)
-        req = urllib.request.Request(url, method='POST')
+        url = 'http://{}:8080/spray?duration={}&rotation={}&roi={}&camera={}'.format(PI_IP, duration, rotation, encoded_roi, camera_index)
+        req = urllib.request.Request(url, headers=authenticated_device_headers(), method='POST')
         with urllib.request.urlopen(req, timeout=10) as response:
             response.read()
         log_message("[Spray Trigger] Sent spray request to Pi successfully.")
@@ -7835,6 +8011,7 @@ def trigger_spray_on_esphome(duration):
     import urllib.parse
 
     settings = load_settings()
+    duration = bounded_duration(duration, default=3.0, maximum=MAX_SPRAY_DURATION_SECONDS)
     base_url = str(settings.get('spray_controller_url') or '').strip().rstrip('/')
     if not base_url:
         log_message("[Spray Trigger] ESPHome controller URL is not configured.")

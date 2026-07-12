@@ -13,7 +13,9 @@ import fcntl
 import json
 import platform
 import base64
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from squirrel_safety import SprayBudget, bounded_duration, device_auth_headers, device_token_matches
 
 GPIO_BACKEND = None
 GPIO = None
@@ -38,8 +40,12 @@ BUTTON_PIN = int(os.environ.get('BUTTON_PIN', '27'))
 BUTTON_ACTIVE_LOW = os.environ.get('BUTTON_ACTIVE_LOW', 'true').lower() not in ('0', 'false', 'no', 'off')
 BUTTON_BOUNCE_SECONDS = 0.75
 BUTTON_POLL_SECONDS = 0.05
-DEFAULT_SPRAY_DURATION = 3.0
-MAC_IP = '192.168.86.137'
+DEFAULT_SPRAY_DURATION = float(os.environ.get('DEFAULT_SPRAY_DURATION', '3.0'))
+MAX_SPRAY_DURATION_SECONDS = float(os.environ.get('MAX_SPRAY_DURATION_SECONDS', '10.0'))
+MAX_SPRAYS_PER_HOUR = int(os.environ.get('MAX_SPRAYS_PER_HOUR', '30'))
+MAX_SPRAY_SECONDS_PER_HOUR = float(os.environ.get('MAX_SPRAY_SECONDS_PER_HOUR', '120'))
+DEVICE_API_TOKEN = os.environ.get('DEVICE_API_TOKEN', '').strip()
+MAC_IP = os.environ.get('MAC_IP', '192.168.86.137')
 CAPTURES_DIR = os.path.expanduser('~/squirrel_soaker/captures')
 VIDEO_TMP_DIR = '/dev/shm/squirrel_soaker'
 BACKLOG_MIN_AGE_SECONDS = 45
@@ -55,8 +61,19 @@ CAMERA_SENSOR_MODE = "2304:1296:10:P"
 sync_lock = threading.Lock()
 spray_lock = threading.Lock()
 latest_settings = {}
+spray_budget = SprayBudget(
+    max_count=MAX_SPRAYS_PER_HOUR,
+    max_open_seconds=MAX_SPRAY_SECONDS_PER_HOUR,
+)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+
+def authenticated_headers(extra=None):
+    headers = device_auth_headers(DEVICE_API_TOKEN)
+    if extra:
+        headers.update(extra)
+    return headers
 
 def get_local_time_and_defaults():
     global latest_settings
@@ -74,8 +91,8 @@ def get_local_time_and_defaults():
 
     try:
         import urllib.request
-        url = "http://{0}:5001/api/settings".format(MAC_IP)
-        req = urllib.request.Request(url, method='GET')
+        url = "http://{0}:5001/api/device/config".format(MAC_IP)
+        req = urllib.request.Request(url, headers=authenticated_headers(), method='GET')
         with urllib.request.urlopen(req, timeout=3) as response:
             data = json.loads(response.read().decode('utf-8'))
         if data.get('status') == 'success':
@@ -109,6 +126,17 @@ def get_camera_sensor_mode():
     if not latest_settings:
         get_local_time_and_defaults()
     return str(latest_settings.get('camera_sensor_mode', CAMERA_SENSOR_MODE) or '').strip()
+
+def get_default_camera_index():
+    try:
+        import capture
+        try:
+            capture.fetch_config_from_mac()
+        except Exception:
+            pass
+        return int(capture.get_active_camera_index(capture.get_eastern_time()))
+    except Exception:
+        return None
 
 def ensure_dir(path):
     if not os.path.exists(path):
@@ -229,6 +257,8 @@ def get_system_health_snapshot():
     if snapshot.get('throttled_now'):
         warnings.append('pi_throttled')
     snapshot['warnings'] = warnings
+    snapshot['spray_safety'] = spray_budget.snapshot()
+    snapshot['max_spray_duration_seconds'] = MAX_SPRAY_DURATION_SECONDS
     return snapshot
 
 def prune_backlog(reason='capacity'):
@@ -288,7 +318,7 @@ def append_rpicam_tuning(cmd):
     cmd.extend(["--contrast", str(tuning['camera_contrast'])])
     cmd.extend(["--sharpness", str(tuning['camera_sharpness'])])
 
-def build_video_command(duration_ms, filepath, rotation=None, roi=None):
+def build_video_command(duration_ms, filepath, rotation=None, roi=None, camera_index=None):
     camera_cmd = find_camera_video_command()
     if camera_cmd in ('rpicam-vid', 'libcamera-vid'):
         cmd = [
@@ -302,6 +332,8 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None):
             "--libav-video-codec", "libx264",
             "--nopreview"
         ]
+        if camera_index is not None:
+            cmd.extend(["--camera", str(camera_index)])
         if rotation in [0, 180]:
             cmd.extend(["--rotation", str(rotation)])
         elif rotation in [90, 270]:
@@ -321,7 +353,7 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None):
         cmd.extend(["-roi", roi])
     return cmd
 
-def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None, upload=True, name_prefix='vid'):
+def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None, upload=True, name_prefix='vid', camera_index=None):
     import urllib.parse
 
     local_time, default_rot, default_roi = get_local_time_and_defaults()
@@ -333,9 +365,9 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None, 
     filename = "{0}_{1}.mp4".format(name_prefix, local_time.strftime("%Y%m%d_%H%M%S"))
     filepath = os.path.join(VIDEO_TMP_DIR, filename)
 
-    cmd = build_video_command(duration_ms, filepath, rotation=rot, roi=selected_roi)
+    cmd = build_video_command(duration_ms, filepath, rotation=rot, roi=selected_roi, camera_index=camera_index)
 
-    print("[Video] Recording {0}s video to RAM at {1}... (rotation={2}, roi={3})".format(duration_ms / 1000.0, filepath, rot, selected_roi))
+    print("[Video] Recording {0}s video to RAM at {1}... (rotation={2}, roi={3}, camera={4})".format(duration_ms / 1000.0, filepath, rot, selected_roi, camera_index))
     try:
         timeout_seconds = int(duration_ms / 1000.0) + 10
         lock_file = open(CAMERA_LOCK_FILE, 'w')
@@ -395,7 +427,7 @@ def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None, 
             pass
         return {'status': 'error', 'message': str(e)}
 
-def build_still_command(filepath, rotation=None, roi=None):
+def build_still_command(filepath, rotation=None, roi=None, camera_index=None):
     camera_cmd = find_camera_still_command()
     if camera_cmd in ('rpicam-still', 'libcamera-still'):
         cmd = [
@@ -409,6 +441,8 @@ def build_still_command(filepath, rotation=None, roi=None):
             "--immediate",
             "--encoding", "jpg"
         ]
+        if camera_index is not None:
+            cmd.extend(["--camera", str(camera_index)])
         if rotation in [0, 180]:
             cmd.extend(["--rotation", str(rotation)])
         if roi:
@@ -425,11 +459,11 @@ def build_still_command(filepath, rotation=None, roi=None):
         cmd.extend(["-roi", roi])
     return cmd
 
-def test_camera_capture():
+def test_camera_capture(camera_index=None):
     local_time, rot, roi = get_local_time_and_defaults()
     ensure_dir(VIDEO_TMP_DIR)
     filepath = os.path.join(VIDEO_TMP_DIR, "camera_test_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S")))
-    cmd = build_still_command(filepath, rotation=rot, roi=roi)
+    cmd = build_still_command(filepath, rotation=rot, roi=roi, camera_index=camera_index)
     lock_file = open(CAMERA_LOCK_FILE, 'w')
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
@@ -453,6 +487,7 @@ def test_camera_capture():
         'bytes': size,
         'rotation': rot,
         'roi': roi,
+        'camera_index': camera_index,
         'filename': os.path.basename(filepath),
         'content_type': 'image/jpeg',
         'image_base64': base64.b64encode(image_bytes).decode('ascii') if image_bytes else ''
@@ -467,7 +502,16 @@ def run_benchmark(iterations=3):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
-    stdout_data, stderr_data = proc.communicate(timeout=90)
+    try:
+        stdout_data, stderr_data = proc.communicate(timeout=90)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _stdout_data, stderr_data = proc.communicate()
+        return {
+            'status': 'error',
+            'message': 'benchmark timed out after 90 seconds',
+            'stderr_tail': stderr_data.decode('utf-8', errors='ignore')[-1000:]
+        }
     stdout_text = stdout_data.decode('utf-8', errors='ignore')
     stderr_text = stderr_data.decode('utf-8', errors='ignore')
     try:
@@ -487,7 +531,7 @@ def post_file(url, filepath, content_type, timeout=20):
     req = urllib.request.Request(
         url,
         data=data,
-        headers={'Content-Type': content_type},
+        headers=authenticated_headers({'Content-Type': content_type}),
         method='POST'
     )
     with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -508,7 +552,7 @@ def report_manual_spray(duration):
         req = urllib.request.Request(
             url,
             data=data,
-            headers={'Content-Type': 'application/json'},
+            headers=authenticated_headers({'Content-Type': 'application/json'}),
             method='POST'
         )
         with urllib.request.urlopen(req, timeout=8) as response:
@@ -566,27 +610,34 @@ def sync_backlog():
     finally:
         sync_lock.release()
 
-def trigger_spray(duration=None, rotation=None, roi=None, source='http'):
+def trigger_spray(duration=None, rotation=None, roi=None, source='http', camera_index=None):
     if duration is None:
         duration = DEFAULT_SPRAY_DURATION
-    try:
-        duration = max(0.0, float(duration))
-    except Exception:
-        duration = DEFAULT_SPRAY_DURATION
+    duration = bounded_duration(
+        duration,
+        default=DEFAULT_SPRAY_DURATION,
+        maximum=MAX_SPRAY_DURATION_SECONDS,
+    )
 
     if not spray_lock.acquire(False):
         print("[Spray] Ignoring {0} trigger because a spray is already running.".format(source))
         return False
 
     try:
-        print("Activating solenoid on GPIO {0} for {1}s from {2}... (rotation={3}, roi={4})".format(
-            SOLENOID_PIN, duration, source, rotation, roi
+        allowed, reason = spray_budget.check(duration)
+        if not allowed:
+            print("[Spray] Ignoring {0} trigger because {1}.".format(source, reason))
+            return False
+        if camera_index is None:
+            camera_index = get_default_camera_index()
+        print("Activating solenoid on GPIO {0} for {1}s from {2}... (rotation={3}, roi={4}, camera={5})".format(
+            SOLENOID_PIN, duration, source, rotation, roi, camera_index
         ))
 
         video_duration_seconds = max(1.0, duration + VIDEO_POST_ROLL_SECONDS)
         video_duration_ms = int(video_duration_seconds * 1000)
         video_started = threading.Event()
-        video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi, video_started))
+        video_thread = threading.Thread(target=record_video, args=(video_duration_ms, rotation, roi, video_started), kwargs={'camera_index': camera_index})
         video_thread.daemon = True
         video_thread.start()
         if not video_started.wait(5.0):
@@ -597,11 +648,13 @@ def trigger_spray(duration=None, rotation=None, roi=None, source='http'):
 
         if gpio_available():
             try:
+                spray_budget.record(duration)
                 set_solenoid(True)
                 time.sleep(duration)
             finally:
                 set_solenoid(False)
         else:
+            spray_budget.record(duration)
             time.sleep(duration)
             print("(Simulation) Solenoid activated and deactivated.")
         if source == 'button':
@@ -694,17 +747,25 @@ class TriggerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         from urllib.parse import urlparse, parse_qs
+        if not self.is_authorized():
+            self.send_json({'status': 'error', 'message': 'unauthorized'}, 401)
+            return
         parsed_path = urlparse(self.path)
 
         if parsed_path.path == '/spray':
             duration = DEFAULT_SPRAY_DURATION
             rotation = None
             roi = None
+            camera_index = None
             query = parse_qs(parsed_path.query)
 
             if 'duration' in query:
                 try:
-                    duration = float(query['duration'][0])
+                    duration = bounded_duration(
+                        query['duration'][0],
+                        default=DEFAULT_SPRAY_DURATION,
+                        maximum=MAX_SPRAY_DURATION_SECONDS,
+                    )
                 except ValueError:
                     pass
             if 'rotation' in query:
@@ -714,8 +775,13 @@ class TriggerHandler(BaseHTTPRequestHandler):
                     pass
             if 'roi' in query:
                 roi = query['roi'][0].strip()
+            if 'camera' in query:
+                try:
+                    camera_index = int(query['camera'][0])
+                except ValueError:
+                    pass
 
-            success = trigger_spray(duration=duration, rotation=rotation, roi=roi, source='http')
+            success = trigger_spray(duration=duration, rotation=rotation, roi=roi, source='http', camera_index=camera_index)
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -735,7 +801,14 @@ class TriggerHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"status":"success","message":"sync started"}')
         elif parsed_path.path == '/test_camera':
             try:
-                self.send_json({'status': 'success', 'result': test_camera_capture()})
+                query = parse_qs(parsed_path.query)
+                camera_index = None
+                if 'camera' in query:
+                    try:
+                        camera_index = int(query['camera'][0])
+                    except ValueError:
+                        pass
+                self.send_json({'status': 'success', 'result': test_camera_capture(camera_index=camera_index)})
             except Exception as e:
                 self.send_json({'status': 'error', 'message': str(e)}, 500)
         elif parsed_path.path == '/test_video':
@@ -746,10 +819,17 @@ class TriggerHandler(BaseHTTPRequestHandler):
                     duration = max(0.5, min(float(query['duration'][0]), 5.0))
                 except ValueError:
                     pass
+            camera_index = None
+            if 'camera' in query:
+                try:
+                    camera_index = int(query['camera'][0])
+                except ValueError:
+                    pass
             result = record_video(
                 duration_ms=int(duration * 1000),
                 upload=True,
-                name_prefix='vid_test'
+                name_prefix='vid_test',
+                camera_index=camera_index
             )
             code = 200 if result.get('status') in ('success', 'backlogged') else 500
             self.send_json({'status': result.get('status', 'unknown'), 'result': result}, code)
@@ -766,12 +846,20 @@ class TriggerHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     pass
             try:
-                if gpio_available():
-                    set_solenoid(True)
-                    time.sleep(duration)
-                    set_solenoid(False)
-                else:
-                    time.sleep(duration)
+                if not spray_lock.acquire(False):
+                    self.send_json({'status': 'busy', 'message': 'spray already running'}, 409)
+                    return
+                try:
+                    if gpio_available():
+                        set_solenoid(True)
+                        time.sleep(duration)
+                    else:
+                        time.sleep(duration)
+                finally:
+                    try:
+                        set_solenoid(False)
+                    finally:
+                        spray_lock.release()
                 self.send_json({'status': 'success', 'message': 'relay pulsed', 'duration': duration})
             except Exception as e:
                 try:
@@ -799,6 +887,9 @@ class TriggerHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         from urllib.parse import urlparse
+        if not self.is_authorized():
+            self.send_json({'status': 'error', 'message': 'unauthorized'}, 401)
+            return
         parsed_path = urlparse(self.path)
         if parsed_path.path == '/diagnostics':
             self.send_json({'status': 'success', 'diagnostics': get_system_health_snapshot()})
@@ -812,7 +903,12 @@ class TriggerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode('utf-8'))
 
+    def is_authorized(self):
+        return device_token_matches(self.headers.get('Authorization'), DEVICE_API_TOKEN)
+
 def run():
+    if not DEVICE_API_TOKEN:
+        raise RuntimeError("DEVICE_API_TOKEN is required for authenticated device communication")
     if setup_gpio():
         monitor_thread = threading.Thread(target=button_monitor)
         monitor_thread.daemon = True
@@ -826,7 +922,8 @@ def run():
         print("GPIO unavailable; trigger server is running in simulation mode.")
 
     server_address = ('', PORT)
-    httpd = HTTPServer(server_address, TriggerHandler)
+    httpd = ThreadingHTTPServer(server_address, TriggerHandler)
+    httpd.daemon_threads = True
     print("Solenoid trigger server listening on port {}...".format(PORT))
     try:
         httpd.serve_forever()

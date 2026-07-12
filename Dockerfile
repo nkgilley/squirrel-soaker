@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.14-slim
 
 # Prevent Python from writing .pyc files and enable unbuffered logging
 ENV PYTHONUNBUFFERED=1 \
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install PyTorch and Torchvision CPU-only to minimize container size
 RUN pip3 install --no-cache-dir \
-    torch torchvision \
+    torch==2.13.0+cpu torchvision==0.28.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 
 # Install Flask and other application dependencies
@@ -23,7 +23,7 @@ COPY requirements.txt /app/
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application files and the trained model weights
-COPY classify_images.py auto_label.py train.py /app/
+COPY classify_images.py auto_label.py train.py squirrel_safety.py squirrel_settings.py /app/
 COPY model.pth yolov8n-oiv7.pt* /app/
 
 # Expose the Flask server port
