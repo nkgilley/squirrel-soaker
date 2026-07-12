@@ -4,6 +4,10 @@ This roadmap was produced from a full review of the Mac server, Raspberry Pi
 agent, model training workflow, web UI, deployment files, and repository
 presentation on July 12, 2026.
 
+Implementation status: the Phase 1/2 baseline is committed in `f3808e0`.
+Phase 3 has started in `02139a1` with the health-history store extracted from
+the server monolith.
+
 ## Review Summary
 
 The current system is capable and already solves the complete capture,
