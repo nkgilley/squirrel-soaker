@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import hashlib
 import json
+import ipaddress
 from flask import Flask, jsonify, request, send_from_directory, render_template_string, g
 import threading
 import uuid
@@ -449,6 +450,8 @@ default_settings = {
     'camera_contrast': 1.0,
     'camera_sharpness': 1.0,
     'camera_tuning_enabled': False,
+    'ir_camera_plug_enabled': False,
+    'ir_camera_plug_ip': '',
     'day_camera_index': 0,
     'night_camera_index': 1,
     'confidence_threshold': 0.70,
@@ -558,6 +561,85 @@ def make_live_frame_jpeg(img_data, settings=None):
         print("Error normalizing live frame:", e)
         return img_data
 
+
+def analyze_frame_quality(img_data):
+    """Return inexpensive blur and exposure signals for camera-health monitoring."""
+    try:
+        import cv2
+        import numpy as np
+        image = cv2.imdecode(np.frombuffer(img_data, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        if image is None or image.size == 0:
+            return {'quality_status': 'invalid'}
+        blur_score = float(cv2.Laplacian(image, cv2.CV_64F).var())
+        underexposed_fraction = float((image < 20).mean())
+        overexposed_fraction = float((image > 245).mean())
+        mean_luma = float(image.mean())
+        problems = []
+        if blur_score < 25:
+            problems.append('blurry')
+        if underexposed_fraction > 0.35:
+            problems.append('underexposed')
+        if overexposed_fraction > 0.35:
+            problems.append('overexposed')
+        return {
+            'quality_status': 'ok' if not problems else ','.join(problems),
+            'blur_score': round(blur_score, 3),
+            'mean_luma': round(mean_luma, 3),
+            'underexposed_fraction': round(underexposed_fraction, 4),
+            'overexposed_fraction': round(overexposed_fraction, 4),
+        }
+    except Exception as e:
+        return {'quality_status': 'unavailable', 'quality_error': str(e)}
+
+
+ir_plug_lock = threading.Lock()
+ir_plug_last_target = None
+ir_plug_status = {'configured': False, 'status': 'disabled'}
+
+
+def sync_ir_camera_plug(settings, camera_period):
+    """Switch the optional NoIR camera plug only when the desired state changes."""
+    global ir_plug_last_target, ir_plug_status
+    enabled = bool(settings.get('ir_camera_plug_enabled'))
+    ip_address = str(settings.get('ir_camera_plug_ip') or '').strip()
+    if not enabled or not ip_address:
+        with ir_plug_lock:
+            ir_plug_last_target = None
+            ir_plug_status = {'configured': False, 'status': 'disabled'}
+        return
+    try:
+        ipaddress.ip_address(ip_address)
+    except ValueError:
+        with ir_plug_lock:
+            ir_plug_status = {'configured': True, 'status': 'invalid_ip'}
+        return
+
+    target = camera_period == 'night'
+    with ir_plug_lock:
+        if ir_plug_last_target == target:
+            return
+        ir_plug_last_target = target
+        ir_plug_status = {'configured': True, 'status': 'switching', 'target_on': target, 'ip': ip_address}
+
+    def switch():
+        global ir_plug_status
+        try:
+            from squirrel_kasa import set_power
+            result = set_power(ip_address, target)
+            with ir_plug_lock:
+                ir_plug_status = {'configured': True, 'status': 'on' if target else 'off', **result}
+        except Exception as e:
+            with ir_plug_lock:
+                ir_plug_status = {'configured': True, 'status': 'error', 'target_on': target, 'ip': ip_address, 'error': str(e)}
+            log_message('[IR Plug] Could not set TP-Link plug: {0}'.format(e))
+
+    threading.Thread(target=switch, daemon=True).start()
+
+
+def get_ir_plug_status():
+    with ir_plug_lock:
+        return dict(ir_plug_status)
+
 BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
 last_spray_time = 0.0
 latest_pi_status = {}
@@ -592,7 +674,12 @@ def add_health_sample(source, pi=None, predict=None):
         'shm_used_percent': pi.get('shm_used_percent'),
         'mem_available_mb': pi.get('mem_available_mb'),
         'backlog_files': pi.get('backlog_files'),
-        'confidence': predict.get('confidence') if predict.get('confidence') is not None else pi.get('confidence')
+        'confidence': predict.get('confidence') if predict.get('confidence') is not None else pi.get('confidence'),
+        'quality_status': predict.get('quality_status'),
+        'blur_score': predict.get('blur_score'),
+        'mean_luma': predict.get('mean_luma'),
+        'underexposed_fraction': predict.get('underexposed_fraction'),
+        'overexposed_fraction': predict.get('overexposed_fraction'),
     }
     health_store.add(sample)
 
@@ -3531,6 +3618,7 @@ HTML_TEMPLATE = """
                 }
                 if (grid) {
                     const daylight = health.daylight || {};
+                    const irPlug = health.ir_camera_plug || {};
                     grid.innerHTML = [
                         metricTile('Last Frame Age', fmtSeconds(health.latest_frame_age_seconds)),
                         metricTile('Daylight', daylight.is_daylight === false ? `Sleeping until ${String(daylight.next_start || '').slice(11, 16)}` : 'Active'),
@@ -3540,7 +3628,10 @@ HTML_TEMPLATE = """
                         metricTile('Model', fmtMs(predict.model_ms)),
                         metricTile('Predict Total', fmtMs(predict.total_ms)),
                         metricTile('Image Size', fmtBytes(pi.file_bytes || predict.input_bytes)),
-                        metricTile('Motion', pi.motion_score === undefined || pi.motion_score === null ? '--' : `${Number(pi.motion_score).toFixed(2)} / ${settings.motion_threshold}`)
+                        metricTile('Motion', pi.motion_score === undefined || pi.motion_score === null ? '--' : `${Number(pi.motion_score).toFixed(2)} / ${settings.motion_threshold}`),
+                        metricTile('Image Quality', predict.quality_status || '--'),
+                        metricTile('Blur Score', predict.blur_score === undefined ? '--' : Number(predict.blur_score).toFixed(1)),
+                        metricTile('IR Plug', irPlug.status || 'disabled')
                     ].join('');
                 }
                 await renderHealthChart();
@@ -4010,6 +4101,10 @@ HTML_TEMPLATE = """
                                 ${settingsField('settings-video-roi', 'Video ROI', 'text', 'placeholder="x,y,w,h"')}
                                 ${settingsField('settings-day-camera-index', 'Day Camera Index', 'number', 'min="0" max="3" step="1"', 'Normal Camera Module 3.')}
                                 ${settingsField('settings-night-camera-index', 'Night Camera Index', 'number', 'min="0" max="3" step="1"', 'NoIR Camera Module 3.')}
+                                ${settingsField('settings-ir-camera-plug-ip', 'IR Camera Plug IP', 'text', 'placeholder="192.168.1.50"', 'Optional TP-Link/Kasa plug used to power the NoIR camera at night.')}
+                                <div class="settings-field settings-field-full">
+                                    ${settingsCheckbox('settings-ir-camera-plug-enabled', 'Control IR camera power with the TP-Link plug')}
+                                </div>
                                 <div class="settings-field settings-field-full">
                                     ${settingsCheckbox('settings-motion-enabled', 'Enable motion prefilter')}
                                 </div>
@@ -4377,6 +4472,8 @@ HTML_TEMPLATE = """
                     setSettingValue('settings-video-roi', loadedSettings.video_roi || '');
                     setSettingValue('settings-day-camera-index', loadedSettings.day_camera_index ?? 0);
                     setSettingValue('settings-night-camera-index', loadedSettings.night_camera_index ?? 1);
+                    setSettingValue('settings-ir-camera-plug-ip', loadedSettings.ir_camera_plug_ip || '');
+                    setSettingChecked('settings-ir-camera-plug-enabled', loadedSettings.ir_camera_plug_enabled === true);
                     setSettingValue('settings-camera-awb', loadedSettings.camera_awb || 'auto');
                     setSettingValue('settings-camera-exposure', loadedSettings.camera_exposure || 'normal');
                     setSettingValue('settings-camera-metering', loadedSettings.camera_metering || 'centre');
@@ -4475,6 +4572,8 @@ HTML_TEMPLATE = """
             const video_roi = getSettingValue('settings-video-roi', loadedSettings.video_roi || '');
             const day_camera_index = parseInt(getSettingValue('settings-day-camera-index', loadedSettings.day_camera_index ?? 0));
             const night_camera_index = parseInt(getSettingValue('settings-night-camera-index', loadedSettings.night_camera_index ?? 1));
+            const ir_camera_plug_ip = getSettingValue('settings-ir-camera-plug-ip', loadedSettings.ir_camera_plug_ip || '');
+            const ir_camera_plug_enabled = getSettingChecked('settings-ir-camera-plug-enabled', loadedSettings.ir_camera_plug_enabled === true);
             const camera_awb = getSettingValue('settings-camera-awb', loadedSettings.camera_awb || 'auto');
             const camera_exposure = getSettingValue('settings-camera-exposure', loadedSettings.camera_exposure || 'normal');
             const camera_metering = getSettingValue('settings-camera-metering', loadedSettings.camera_metering || 'centre');
@@ -4551,6 +4650,8 @@ HTML_TEMPLATE = """
                         video_roi,
                         day_camera_index,
                         night_camera_index,
+                        ir_camera_plug_ip,
+                        ir_camera_plug_enabled,
                         camera_awb,
                         camera_exposure,
                         camera_metering,
@@ -7385,6 +7486,7 @@ def api_health():
         'daylight': daylight,
         'pi': pi_status_copy,
         'predict': predict_metrics_copy,
+        'ir_camera_plug': get_ir_plug_status(),
         'settings': {
             'analysis_interval': settings.get('analysis_interval'),
             'save_interval': settings.get('save_interval'),
@@ -7755,6 +7857,8 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
     camera_period = str(request.args.get('period') or request.args.get('camera_period') or '').strip().lower()
     if camera_period not in ('day', 'night'):
         camera_period = 'day' if get_daylight_status(settings).get('is_daylight') else 'night'
+    sync_ir_camera_plug(settings, camera_period)
+    quality = analyze_frame_quality(img_data)
     selected_model_name = resolve_model_for_period(settings, camera_period)
     if selected_model_name != active_model_name:
         load_active_model(selected_model_name)
@@ -7944,6 +8048,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
         'spray_decision': decision,
         'camera_period': camera_period,
         'model_name': selected_model_name,
+        **quality,
         'confidence': confidence,
         'write_ms': round(write_ms, 1),
         'normalize_ms': round(normalize_ms, 1),

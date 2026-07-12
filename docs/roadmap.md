@@ -99,6 +99,10 @@ camera, production database, model checkpoint, or real solenoid attached.
 
 ## Phase 5: Product Features
 
+Implementation started: image-quality telemetry is now reported in health data
+and the dashboard, and an optional TP-Link/Kasa plug can power the NoIR camera
+on during the configured night period and off during the day period.
+
 - Detect blur, obstruction, bad exposure, and autofocus failures automatically.
 - Add an event-detail view showing every frame and decision behind a spray.
 - Add visible safety budgets and an emergency-disable control.

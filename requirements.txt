@@ -6,3 +6,4 @@ ultralytics==8.4.91
 opencv-python-headless==5.0.0.93
 google-genai==2.11.0
 python-dotenv==1.2.2
+python-kasa==0.10.2

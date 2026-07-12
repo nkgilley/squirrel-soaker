@@ -231,6 +231,7 @@ Important settings:
 - **Review JPEG Quality**: higher quality frames saved for classification.
 - **Camera ROI**: legacy Pi still-image crop.
 - **Video ROI**: legacy Pi/video crop used for spray event videos.
+- **IR Camera Plug**: optionally enable TP-Link/Kasa local control and enter the plug's LAN IP. The app turns it on during the night period and off during the day period. Leave it disabled unless the NoIR camera is physically powered through that plug.
 - **Camera Rotation**: legacy Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.

@@ -1,5 +1,7 @@
 """Server-side validation for settings received from the web API."""
 
+import ipaddress
+
 
 NUMERIC_BOUNDS = {
     'analysis_interval': (5, 300),
@@ -90,6 +92,15 @@ def validate_settings_patch(data, defaults, maximum_spray_seconds=10.0):
         if key in CHOICES and normalized[key] not in CHOICES[key]:
             errors.append('{0} must be one of: {1}'.format(key, ', '.join(sorted(CHOICES[key]))))
 
+    if errors:
+        return {}, errors
+    if normalized.get('ir_camera_plug_enabled') and normalized.get('ir_camera_plug_ip'):
+        try:
+            ipaddress.ip_address(normalized['ir_camera_plug_ip'])
+        except ValueError:
+            errors.append('ir_camera_plug_ip must be a valid IP address')
+    elif normalized.get('ir_camera_plug_enabled'):
+        errors.append('ir_camera_plug_ip is required when the IR plug is enabled')
     if errors:
         return {}, errors
     return normalized, []
