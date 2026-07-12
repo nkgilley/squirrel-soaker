@@ -2,6 +2,8 @@ import os
 import time
 import shutil
 import subprocess
+import hashlib
+import json
 from flask import Flask, jsonify, request, send_from_directory, render_template_string, g
 import threading
 import uuid
@@ -395,7 +397,9 @@ VIDEOS_DIR = os.path.join(BASE_DIR, 'data', 'videos')
 TRASH_DIR = os.path.join(BASE_DIR, 'data', 'trash')
 THUMBNAILS_DIR = os.path.join(BASE_DIR, 'data', 'thumbnails')
 PREDICT_TMP_DIR = os.path.join(BASE_DIR, 'data', 'tmp_predict')
+HARD_NEGATIVE_MANIFEST_FILE = os.path.join(DATASET_DIR, 'hard_negative_manifest.json')
 os.makedirs(PREDICT_TMP_DIR, exist_ok=True)
+hard_negative_manifest_lock = threading.Lock()
 
 AUTOMATION_STATUS_FILE = os.path.join(BASE_DIR, 'data', 'automation_status.json')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'data', 'settings.json')
@@ -1020,6 +1024,34 @@ def delete_video_files(filename):
             deleted += 1
     return deleted
 
+
+def record_hard_negative_provenance(filename, source_video, frame_index, frame_bytes=None):
+    """Record the source of an extracted hard negative without duplicating entries."""
+    with hard_negative_manifest_lock:
+        manifest = {}
+        if os.path.exists(HARD_NEGATIVE_MANIFEST_FILE):
+            try:
+                with open(HARD_NEGATIVE_MANIFEST_FILE, 'r') as f:
+                    manifest = json.load(f)
+            except (OSError, ValueError):
+                manifest = {}
+        if filename in manifest:
+            return False
+        manifest[filename] = {
+            'source_video': source_video,
+            'frame_index': int(frame_index),
+            'label': 'not_squirrel',
+            'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'sha256': hashlib.sha256(frame_bytes).hexdigest() if frame_bytes else None,
+        }
+        temp_path = HARD_NEGATIVE_MANIFEST_FILE + '.tmp'
+        with open(temp_path, 'w') as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, HARD_NEGATIVE_MANIFEST_FILE)
+        return True
+
 def get_blast_for_video(db_video_or_filename):
     if isinstance(db_video_or_filename, DBVideo):
         db_video = db_video_or_filename
@@ -1102,6 +1134,7 @@ def extract_false_alarm_training_frames(video_name, max_frames=6):
             out_name = "false_alarm_{0}_{1:02d}.jpg".format(stem, idx + 1)
             out_path = os.path.join(NOT_SQUIRREL_DIR, out_name)
             if os.path.exists(out_path):
+                record_hard_negative_provenance(out_name, safe_name, frame_idx)
                 continue
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -1111,6 +1144,9 @@ def extract_false_alarm_training_frames(video_name, max_frames=6):
 
             if not cv2.imwrite(out_path, frame):
                 continue
+            with open(out_path, 'rb') as frame_file:
+                frame_bytes = frame_file.read()
+            record_hard_negative_provenance(out_name, safe_name, frame_idx, frame_bytes)
 
             # Retention for generated hard negatives should start when we create
             # the training frame, not when the original video was recorded. Old
@@ -4601,9 +4637,15 @@ HTML_TEMPLATE = """
                 <div style="background: rgba(2, 6, 23, 0.4); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 16px; margin-bottom: 1.5rem; backdrop-filter: blur(10px);">
                     <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);">Finetune ResNet-18 Classifier</h3>
                     <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1.25rem; line-height: 1.5;">
-                        This will retrain the AI model locally using all categorized images inside the squirrel and not_squirrel dataset folders.
+                        This will retrain the AI model locally using the selected day/night dataset when available, or the shared dataset as a fallback.
                         The training runs in the background, saves a timestamped checkpoint, and asks before switching the active model.
                     </p>
+                    <label for="training-period" style="display: block; margin-bottom: 0.45rem; color: var(--text-secondary);">Training dataset</label>
+                    <select id="training-period" style="margin-bottom: 1rem; min-width: 180px;">
+                        <option value="all">Shared dataset</option>
+                        <option value="day">Day dataset</option>
+                        <option value="night">Night dataset</option>
+                    </select>
                     <button id="start-train-btn" class="btn" style="background-color: var(--color-sync); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);" onclick="startTraining()">
                         <span class="spinner" id="train-spinner" style="display: none; border-left-color: white;"></span>
                         <span class="btn-text" id="train-btn-text">Start Training 🚀</span>
@@ -4778,7 +4820,12 @@ HTML_TEMPLATE = """
 
         async function startTraining() {
             try {
-                const res = await fetch('/api/train/start', { method: 'POST' });
+                const period = document.getElementById('training-period')?.value || 'all';
+                const res = await fetch('/api/train/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ period })
+                });
                 const data = await res.json();
                 if (data.status === 'success') {
                     checkTrainStatus();
@@ -6521,6 +6568,17 @@ def save_timestamped_training_checkpoint():
         dst_path = os.path.join(MODELS_DIR, filename)
         suffix += 1
     shutil.copy2(src_path, dst_path)
+    digest = hashlib.sha256()
+    with open(dst_path, 'rb') as model_file:
+        for chunk in iter(lambda: model_file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    metadata_path = dst_path + '.json'
+    with open(metadata_path, 'w') as metadata_file:
+        json.dump({
+            'filename': filename,
+            'sha256': digest.hexdigest(),
+            'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }, metadata_file, indent=2, sort_keys=True)
     log_message("[Training] Saved newly trained model checkpoint as {0}".format(filename))
     return filename
 
@@ -7475,6 +7533,11 @@ def start_training():
     if training_process is not None and training_process.poll() is None:
         return jsonify({'status': 'error', 'message': 'Training is already in progress.'})
 
+    data = request.get_json(silent=True) or {}
+    period = str(data.get('period') or 'all').strip().lower()
+    if period not in ('all', 'day', 'night'):
+        return jsonify({'status': 'error', 'message': 'Training period must be all, day, or night'}), 400
+
     # Clear the log file
     log_path = os.path.join(BASE_DIR, 'data', 'train.log')
     false_alarm_training = extract_all_false_alarm_training_frames()
@@ -7498,7 +7561,7 @@ def start_training():
         last_trained_model_filename = None
         last_trained_model_prompted = False
         training_process = subprocess.Popen(
-            [sys.executable, '-u', train_script],
+            [sys.executable, '-u', train_script, '--period', period],
             stdout=open(log_path, 'a'),
             stderr=subprocess.STDOUT
         )
@@ -7506,6 +7569,7 @@ def start_training():
         return jsonify({
             'status': 'success',
             'message': 'Training started.',
+            'period': period,
             'false_alarm_training': false_alarm_training
         })
     except Exception as e:

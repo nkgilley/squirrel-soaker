@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 import os
 import sys
+import argparse
+import datetime
+import json
+import random
+import re
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms, models
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -37,9 +42,88 @@ class SafeImageFolder(datasets.ImageFolder):
 
         raise RuntimeError("All candidate training images were missing or unreadable")
 
-def train_model():
+
+def sample_group(path):
+    """Group adjacent captures so burst frames cannot cross the split."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if stem.startswith('false_alarm_'):
+        return re.sub(r'_\d+$', '', stem)
+    match = re.search(r'(\d{8})_(\d{6})', stem)
+    if match:
+        date_part, time_part = match.groups()
+        minute_bucket = time_part[:4]
+        return '{0}_{1}'.format(date_part, minute_bucket)
+    return re.sub(r'_\d+$', '', stem)
+
+
+def grouped_split_indices(samples, validation_fraction=0.2, seed=42):
+    """Return train/validation indexes split by capture group."""
+    groups = {}
+    for index, (path, _label) in enumerate(samples):
+        groups.setdefault(sample_group(path), []).append(index)
+
+    group_names = sorted(groups)
+    random.Random(seed).shuffle(group_names)
+    target = max(1, int(round(len(samples) * validation_fraction)))
+    validation_groups = set()
+    validation_count = 0
+    for group_name in group_names:
+        if validation_count >= target and validation_groups:
+            break
+        validation_groups.add(group_name)
+        validation_count += len(groups[group_name])
+
+    val_indices = [index for name in validation_groups for index in groups[name]]
+    train_indices = [index for name in group_names if name not in validation_groups for index in groups[name]]
+    if not train_indices or not val_indices:
+        raise ValueError('Need at least two capture groups for grouped validation')
+    return train_indices, val_indices
+
+
+def classification_metrics(labels, predictions, classes):
+    matrix = [[0 for _ in classes] for _ in classes]
+    for actual, predicted in zip(labels, predictions):
+        matrix[int(actual)][int(predicted)] += 1
+
+    total = sum(sum(row) for row in matrix)
+    correct = sum(matrix[i][i] for i in range(len(classes)))
+    per_class = {}
+    for index, name in enumerate(classes):
+        true_positive = matrix[index][index]
+        false_positive = sum(row[index] for row in matrix) - true_positive
+        false_negative = sum(matrix[index]) - true_positive
+        precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+        recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        per_class[name] = {
+            'precision': round(precision, 6),
+            'recall': round(recall, 6),
+            'f1': round(f1, 6),
+            'support': sum(matrix[index]),
+        }
+    return {
+        'accuracy': round(correct / total, 6) if total else 0.0,
+        'total': total,
+        'confusion_matrix': matrix,
+        'per_class': per_class,
+    }
+
+
+def choose_dataset(base_dir, period):
+    period_dir = os.path.join(base_dir, 'data', 'dataset_{0}'.format(period))
+    common_dir = os.path.join(base_dir, 'data', 'dataset')
+    if os.path.isdir(period_dir):
+        return period_dir
+    return common_dir
+
+
+def train_model(period='all', seed=42, epochs=10):
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DATASET_DIR = os.path.join(BASE_DIR, 'data', 'dataset')
+    if period not in ('all', 'day', 'night'):
+        raise ValueError('period must be all, day, or night')
+    DATASET_DIR = choose_dataset(BASE_DIR, period) if period != 'all' else os.path.join(BASE_DIR, 'data', 'dataset')
+    random.seed(seed)
+    torch.manual_seed(seed)
     
     # 1. Set device: use MPS (Metal Performance Shaders) on Apple Silicon,
     # CUDA on NVIDIA GPUs, otherwise fallback to CPU.
@@ -83,10 +167,10 @@ def train_model():
         print("Error: Need at least 2 classes (squirrel and not_squirrel) to train.")
         sys.exit(1)
         
-    # 4. Split dataset into train (80%) and validation (20%) sets
-    val_size = int(len(dataset) * 0.2)
-    train_size = len(dataset) - val_size
-    train_set, val_set = random_split(dataset, [train_size, val_size])
+    # Split by capture group, not individual image, to prevent burst leakage.
+    train_indices, val_indices = grouped_split_indices(dataset.samples, seed=seed)
+    train_set = Subset(dataset, train_indices)
+    val_set = Subset(dataset, val_indices)
     
     # Custom Dataset class to apply different transforms to train/val subsets
     class SubsetWrapper(torch.utils.data.Dataset):
@@ -133,9 +217,10 @@ def train_model():
     criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
     optimizer = optim.Adam(model.parameters(), lr=0.0001)
     
-    num_epochs = 10
+    num_epochs = max(1, int(epochs))
     best_val_acc = 0.0
     model_path = os.path.join(BASE_DIR, 'model.pth')
+    best_metrics = None
     
     print("Starting training loop...")
     for epoch in range(num_epochs):
@@ -165,7 +250,8 @@ def train_model():
         # Validation Phase
         model.eval()
         val_loss = 0.0
-        val_corrects = 0
+        val_labels = []
+        val_predictions = []
         
         with torch.no_grad():
             for inputs, labels in val_loader:
@@ -177,10 +263,12 @@ def train_model():
                 loss = criterion(outputs, labels)
                 
                 val_loss += loss.item() * inputs.size(0)
-                val_corrects += torch.sum(preds == labels.data)
+                val_labels.extend(labels.detach().cpu().tolist())
+                val_predictions.extend(preds.detach().cpu().tolist())
                 
         val_loss = val_loss / len(val_dataset)
-        val_acc = val_corrects.float() / len(val_dataset)
+        best_metrics = classification_metrics(val_labels, val_predictions, classes)
+        val_acc = best_metrics['accuracy']
         
         print("Epoch {0}/{1} - Train Loss: {2:.4f} Acc: {3:.4f} | Val Loss: {4:.4f} Acc: {5:.4f}".format(
             epoch + 1, num_epochs, epoch_loss, epoch_acc, val_loss, val_acc
@@ -191,11 +279,28 @@ def train_model():
             best_val_acc = val_acc
             torch.save({
                 'model_state_dict': model.state_dict(),
-                'classes': classes
+                'classes': classes,
+                'metadata': {
+                    'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    'period': period,
+                    'seed': seed,
+                    'epochs': num_epochs,
+                    'dataset_dir': os.path.relpath(DATASET_DIR, BASE_DIR),
+                    'split': 'grouped_by_capture_minute_or_video',
+                    'train_samples': len(train_dataset),
+                    'validation_samples': len(val_dataset),
+                    'metrics': best_metrics,
+                }
             }, model_path)
             
     print("Training finished! Best validation accuracy: {0:.4f}".format(best_val_acc))
+    print("Validation metrics: {0}".format(json.dumps(best_metrics, sort_keys=True)))
     print("Saved model checkpoint to {0}".format(model_path))
 
 if __name__ == '__main__':
-    train_model()
+    parser = argparse.ArgumentParser(description='Train the squirrel classifier')
+    parser.add_argument('--period', choices=('all', 'day', 'night'), default='all')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--epochs', type=int, default=10)
+    args = parser.parse_args()
+    train_model(period=args.period, seed=args.seed, epochs=args.epochs)

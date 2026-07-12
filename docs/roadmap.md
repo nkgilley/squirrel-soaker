@@ -6,7 +6,9 @@ presentation on July 12, 2026.
 
 Implementation status: the Phase 1/2 baseline is committed in `f3808e0`.
 Phase 3 has started in `02139a1` with the health-history store extracted from
-the server monolith.
+the server monolith. Phase 4 model-quality work is now implemented in the
+current working tree: grouped evaluation, day/night training targets,
+checkpoint metadata, checksums, and hard-negative provenance.
 
 ## Review Summary
 
