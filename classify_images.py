@@ -13,6 +13,7 @@ from functools import wraps
 from PIL import ImageFile
 
 from squirrel_safety import DetectionGate, bounded_duration, device_auth_headers, device_token_matches
+from squirrel_health import HealthStore
 from squirrel_settings import public_device_settings, validate_settings_patch
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -557,7 +558,7 @@ BLASTS_LOG_FILE = os.path.join(BASE_DIR, 'data', 'blasts_log.json')
 last_spray_time = 0.0
 latest_pi_status = {}
 latest_predict_metrics = {}
-health_history = deque(maxlen=720)
+health_store = HealthStore(max_samples=720)
 telemetry_lock = threading.Lock()
 detection_gate = DetectionGate()
 pending_spray_confirmation = None
@@ -589,7 +590,7 @@ def add_health_sample(source, pi=None, predict=None):
         'backlog_files': pi.get('backlog_files'),
         'confidence': predict.get('confidence') if predict.get('confidence') is not None else pi.get('confidence')
     }
-    health_history.append(sample)
+    health_store.add(sample)
 
 def get_spray_decision(is_squirrel, confidence, settings, now_time=None):
     now_time = now_time or time.time()
@@ -7385,8 +7386,7 @@ def api_health():
 def api_health_history():
     since_seconds = request.args.get('seconds', default=600, type=int)
     cutoff = time.time() - max(30, min(since_seconds, 86400))
-    with telemetry_lock:
-        samples = [s for s in list(health_history) if s.get('t', 0) >= cutoff]
+    samples = health_store.since(cutoff)
     return jsonify({
         'status': 'success',
         'samples': samples

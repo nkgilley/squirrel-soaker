@@ -23,7 +23,7 @@ COPY requirements.txt /app/
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application files and the trained model weights
-COPY classify_images.py auto_label.py train.py squirrel_safety.py squirrel_settings.py /app/
+COPY classify_images.py auto_label.py train.py squirrel_safety.py squirrel_health.py squirrel_settings.py /app/
 COPY model.pth yolov8n-oiv7.pt* /app/
 
 # Expose the Flask server port
