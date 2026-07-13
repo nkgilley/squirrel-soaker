@@ -5,6 +5,7 @@
 # Compatible with Python 3.4.2+.
 
 import io
+import os
 import time
 import logging
 import threading
@@ -19,7 +20,7 @@ except ImportError:
 
 # --- Configuration ---
 PORT = 8554
-MAC_IP = '192.168.86.137'  # IP of the Mac running the Flask app
+MAC_IP = os.environ.get('MAC_IP', '127.0.0.1')  # IP of the server running the Flask app
 WIDTH = 1920
 HEIGHT = 1080
 FPS = 5

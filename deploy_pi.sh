@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PI_HOST="${PI_HOST:-pi5}"
-PI_APP_DIR="${PI_APP_DIR:-/home/nolan/squirrel_soaker}"
+PI_APP_DIR="${PI_APP_DIR:-/home/pi/squirrel_soaker}"
 DEVICE_API_TOKEN="${DEVICE_API_TOKEN:-$(sed -n 's/^DEVICE_API_TOKEN=//p' .env 2>/dev/null | tail -n 1)}"
 
 if [[ -z "${DEVICE_API_TOKEN}" ]]; then

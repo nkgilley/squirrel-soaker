@@ -356,8 +356,8 @@ def load_env_file():
 load_env_file()
 
 # --- Configuration ---
-PI_IP = os.environ.get('PI_IP', '192.168.86.107')
-PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'http://192.168.86.137')
+PI_IP = os.environ.get('PI_IP', '').strip()
+PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'http://localhost:5001').strip()
 DEVICE_API_TOKEN = os.environ.get('DEVICE_API_TOKEN', '').strip()
 MAX_SPRAY_DURATION_SECONDS = float(os.environ.get('MAX_SPRAY_DURATION_SECONDS', '10.0'))
 MAX_CONTENT_LENGTH_MB = int(os.environ.get('MAX_CONTENT_LENGTH_MB', '100'))
@@ -4101,7 +4101,7 @@ HTML_TEMPLATE = """
                                 ${settingsField('settings-video-roi', 'Video ROI', 'text', 'placeholder="x,y,w,h"')}
                                 ${settingsField('settings-day-camera-index', 'Day Camera Index', 'number', 'min="0" max="3" step="1"', 'Normal Camera Module 3.')}
                                 ${settingsField('settings-night-camera-index', 'Night Camera Index', 'number', 'min="0" max="3" step="1"', 'NoIR Camera Module 3.')}
-                                ${settingsField('settings-ir-camera-plug-ip', 'IR Camera Plug IP', 'text', 'placeholder="192.168.1.50"', 'Optional TP-Link/Kasa plug used to power the NoIR camera at night.')}
+                                ${settingsField('settings-ir-camera-plug-ip', 'IR Camera Plug IP', 'text', 'placeholder="192.0.2.50"', 'Optional TP-Link/Kasa plug used to power the NoIR camera at night.')}
                                 <div class="settings-field settings-field-full">
                                     ${settingsCheckbox('settings-ir-camera-plug-enabled', 'Control IR camera power with the TP-Link plug')}
                                 </div>

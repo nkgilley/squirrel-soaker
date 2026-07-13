@@ -12,8 +12,8 @@ services:
       - ./model.pth:/app/model.pth
     environment:
       - TZ=America/New_York
-      - PI_IP=192.168.86.107
-      - PUBLIC_BASE_URL=http://192.168.86.137
+      - PI_IP=${PI_IP:-}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:5001}
       - CAMERA_SOURCE=pi
       - SPRAY_CONTROLLER_TYPE=pi
       - DEVICE_API_TOKEN=${DEVICE_API_TOKEN:?Set DEVICE_API_TOKEN in .env}

@@ -96,10 +96,10 @@ The included `docker-compose.yml` maps:
 - `5001:5001` for the web app.
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for persistent model weights.
-- `PI_IP=192.168.86.107` so manual web sprays can call the Pi 5 trigger server.
+- `PI_IP=<pi-address>` so manual web sprays can call the Pi 5 trigger server.
 - `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling the Wyze snapshot bridge.
 - `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.
-- `PUBLIC_BASE_URL=http://192.168.86.137` so notification links use the LAN address instead of Docker's internal bridge IP.
+- `PUBLIC_BASE_URL=http://<server-address>:5001` so notification links use the reachable server address instead of Docker's internal bridge IP.
 
 ---
 
@@ -130,8 +130,8 @@ esphome run esphome/squirrel-soaker-controller.yaml --device /dev/cu.usbserial-0
 If you switch Settings back to ESPHome, the app triggers sprays through the ESPHome local web API:
 
 ```text
-POST http://192.168.86.136/number/spray_duration/set?value=3.0
-POST http://192.168.86.136/button/spray/press
+POST http://<esp32-address>/number/spray_duration/set?value=3.0
+POST http://<esp32-address>/button/spray/press
 ```
 
 The same controller can also be managed from the ESPHome native API if you later add Home Assistant or another ESPHome client.
@@ -162,8 +162,8 @@ Current Raspberry Pi OS uses `rpicam-still` and `rpicam-vid`. The Pi scripts aut
 
 The Pi scripts need the Mac/Docker host IP:
 
-```python
-MAC_IP = '192.168.86.137'
+```bash
+MAC_IP=<server-address>
 ```
 
 Update that value in `capture.py` and `trigger_server.py` if the server host changes.
@@ -176,13 +176,24 @@ From the Mac workspace:
 ./deploy_pi.sh
 ```
 
-The deploy script copies the Pi files to the `pi5` SSH host at `/home/nolan/squirrel_soaker` by default, installs the systemd services, enables capture and trigger services, disables the old stream service, and restarts everything.
+The deploy script copies the Pi files to the `pi5` SSH host at
+`/home/<user>/squirrel_soaker` by default, installs the systemd services,
+enables capture and trigger services, disables the old stream service, and
+restarts everything.
 
 Override the target if needed:
 
 ```bash
 PI_HOST=<ssh-host> PI_APP_DIR=/home/<user>/squirrel_soaker ./deploy_pi.sh
 ```
+
+## Project Documentation
+
+- `docs/ARCHITECTURE.md`: services, data flow, and recovery boundaries.
+- `docs/WIRING.md` and `docs/SAFETY.md`: hardware bring-up and spray safety.
+- `docs/TROUBLESHOOTING.md`: common server, Pi, camera, and video failures.
+- `docs/MODEL_CARD.md` and `docs/RELEASING.md`: model provenance and release policy.
+- `CONTRIBUTING.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md`: community standards.
 
 ### Monitor Pi Logs
 

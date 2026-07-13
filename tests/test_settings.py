@@ -66,8 +66,8 @@ def test_ir_plug_requires_a_valid_ip_when_enabled():
 
 def test_ir_plug_ip_is_accepted_when_enabled():
     values, errors = validate_settings_patch(
-        {'ir_camera_plug_enabled': True, 'ir_camera_plug_ip': '192.168.1.50'},
+        {'ir_camera_plug_enabled': True, 'ir_camera_plug_ip': '192.0.2.50'},
         DEFAULTS,
     )
     assert not errors
-    assert values['ir_camera_plug_ip'] == '192.168.1.50'
+    assert values['ir_camera_plug_ip'] == '192.0.2.50'

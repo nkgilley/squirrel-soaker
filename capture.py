@@ -58,7 +58,7 @@ CAMERA_LOCK_FILE = '/tmp/squirrel_soaker_camera.lock'
 BACKLOG_MAX_FILES = 300
 BACKLOG_MAX_BYTES = 250 * 1024 * 1024
 BACKLOG_MAX_AGE_SECONDS = 24 * 60 * 60
-MAC_IP = '192.168.86.137'
+MAC_IP = os.environ.get('MAC_IP', '127.0.0.1')
 DEVICE_API_TOKEN = os.environ.get('DEVICE_API_TOKEN', '').strip()
 
 CONFIDENCE_THRESHOLD = 0.70
