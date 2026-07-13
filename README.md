@@ -17,18 +17,33 @@ The current capture path uses Pi still images because they are cleaner for class
 ## Architecture Flow
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    loop Configurable analysis interval
-        Raspberry Pi->>Mac/Docker Server: POST /api/predict with JPEG frame
-        Mac/Docker Server->>Mac/Docker Server: Normalize frame, update live snapshot, run PyTorch inference
-        opt Save interval elapsed
-            Mac/Docker Server->>Mac/Docker Server: Save review image on server storage
-        end
-        alt Repeated squirrel detections pass spray gate
-            Raspberry Pi->>Raspberry Pi: Trigger local solenoid and record video
-        end
+flowchart LR
+    subgraph PI["Raspberry Pi 5"]
+        CAM["Camera Module 3"] --> CAP["Capture loop\n5-second analysis"]
+        CAP -->|"JPEG + telemetry"| API
+        TRIG["Trigger server"] --> GPIO["GPIO driver"] --> VALVE["Solenoid"]
+        TRIG -->|"short-lived recording"| VID["Event video"]
     end
+
+    subgraph APP["Mac / Docker host"]
+        API["Flask API"] --> INF["PyTorch inference"]
+        INF --> GATE["Decision gate\nconfidence + safety limits"]
+        API --> LIVE["Live image\nin memory"]
+        GATE -->|"authenticated command"| TRIG
+        API --> STORE[("SQLite + media")]
+        INF --> STORE
+    end
+
+    VID -->|"upload after spray"| STORE
+    STORE --> UI["Dashboard\nreview + training"]
+    APP -. "optional night power" .-> PLUG["TP-Link/Kasa plug"]
+
+    classDef device fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef app fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef data fill:#fef3c7,stroke:#d97706,color:#78350f
+    class CAM,CAP,TRIG,GPIO,VALVE,VID,PLUG device
+    class API,INF,GATE,LIVE,UI app
+    class STORE data
 ```
 
 Normal camera operation keeps media on the Mac/server:

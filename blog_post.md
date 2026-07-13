@@ -24,21 +24,20 @@ Here is the complete engineering journey of how it was built.
 The system is split into two nodes: the **Raspberry Pi Sentry** (mounted near the feeder) and the **Central Mac AI Server** (running locally in the house). 
 
 ```mermaid
-sequenceDiagram
-    participant Pi Camera as Pi Camera
-    participant Pi Daemon as Pi Capture Loop
-    participant Mac Server as Mac AI Server (Flask)
-    participant Solenoid as Pi Solenoid Server
-    
-    Pi Daemon->>Pi Camera: Capture still frame (configurable, default 5s)
-    Pi Daemon->>Mac Server: POST frame bytes to /api/predict
-    Note over Mac Server: ResNet-18 Inference
-    Mac Server-->>Pi Daemon: Return JSON (is_squirrel, confidence)
-    alt Squirrel detected with > 70% confidence
-        Pi Daemon->>Solenoid: Trigger local GPIO spray path
-        Note over Solenoid: Spray water for 3 seconds
-        Solenoid->>Pi Daemon: Record 5-second video proof
+flowchart LR
+    subgraph PI["Raspberry Pi 5"]
+        C["Camera Module 3"] --> L["Capture loop\nconfigurable, default 5s"]
+        L -->|"JPEG + telemetry"| A
+        T["Trigger server"] --> G["GPIO driver"] --> S["Solenoid"]
+        T --> V["Event video"]
     end
+    subgraph SERVER["Mac / Docker host"]
+        A["Flask API"] --> M["PyTorch model"] --> Q["Decision gate\nconfidence + safety"]
+        Q -->|"authenticated command"| T
+        A --> D[("Events + media")]
+        M --> D
+    end
+    V -->|"upload"| D
 ```
 
 ### The Hardware Setup
