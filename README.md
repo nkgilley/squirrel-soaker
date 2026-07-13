@@ -132,7 +132,7 @@ or restricting lens movement can still produce consistently blurry images.
 1. Raspberry Pi 5 with a normal Camera Module 3 for daytime capture.
 2. Camera Module 3 NoIR for nighttime capture, plus suitable IR illumination.
 3. Optional TP-Link/Kasa smart plug for scheduled night-camera or illuminator power.
-4. Docker Desktop on the Mac/server, running `squirrel-soaker`.
+4. A Docker host running `squirrel-soaker`.
 5. 12V normally closed solenoid valve.
 6. Relay/transistor controller for the 12V solenoid.
 7. Momentary push button wired to the Pi for manual sprays.
