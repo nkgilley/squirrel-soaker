@@ -136,7 +136,7 @@ or restricting lens movement can still produce consistently blurry images.
 5. 12V normally closed solenoid valve.
 6. Relay/transistor controller for the 12V solenoid.
 7. Momentary push button wired to the Pi for manual sprays.
-8. 12V DC power supply, tubing, and a nozzle mounted near the birdfeeder.
+8. 12V DC power supply, garden hose, and a sprayer mounted near the birdfeeder.
 
 ---
 
