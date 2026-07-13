@@ -1,5 +1,7 @@
 # Building the Squirrel Soaker 9001: An AI-Powered, Water-Blasting Feeder Sentry
 
+![Squirrel Soaker 9001](Gemini_Generated_Image_29b0xu29b0xu29b0.png)
+
 Have you ever filled a bird feeder with premium seed, only to watch a horde of squirrels perform acrobatics, consume the entire supply in minutes, and scare away the local birds? 
 
 Frustrated by this endless battle, I decided to stop relying on "squirrel-proof" feeders and build a high-tech solution: **The Squirrel Soaker 9001**. 
@@ -7,6 +9,13 @@ Frustrated by this endless battle, I decided to stop relying on "squirrel-proof"
 This project combines a **Raspberry Pi** edge node, a **PyTorch ResNet-18** deep learning model running on a local server, a **GPIO-controlled solenoid water valve**, and a **modern stats dashboard web app** to build the ultimate automated birdfeeder sentry.
 
 Here is the complete engineering journey of how it was built.
+
+> **Current implementation:** The project now uses a Raspberry Pi 5 with a
+> Camera Module 3 and local GPIO control for the solenoid and manual button.
+> The Mac/Docker server performs inference and stores media. Model weights are
+> intentionally excluded from the repository; each installation trains its
+> own model from its own camera data. Optional day/night NoIR camera power is
+> controlled through a TP-Link/Kasa plug.
 
 ---
 
@@ -21,21 +30,21 @@ sequenceDiagram
     participant Mac Server as Mac AI Server (Flask)
     participant Solenoid as Pi Solenoid Server
     
-    Pi Daemon->>Pi Camera: Capture still frame (every 30s)
+    Pi Daemon->>Pi Camera: Capture still frame (configurable, default 5s)
     Pi Daemon->>Mac Server: POST frame bytes to /api/predict
     Note over Mac Server: ResNet-18 Inference
     Mac Server-->>Pi Daemon: Return JSON (is_squirrel, confidence)
     alt Squirrel detected with > 70% confidence
-        Pi Daemon->>Solenoid: Trigger /spray (GPIO 17)
+        Pi Daemon->>Solenoid: Trigger local GPIO spray path
         Note over Solenoid: Spray water for 3 seconds
         Solenoid->>Pi Daemon: Record 5-second video proof
     end
 ```
 
 ### The Hardware Setup
-- **Raspberry Pi 3/4**: Acts as the edge controller.
+- **Raspberry Pi 5**: Acts as the edge controller and keeps normal frames in memory.
 - **Pi Camera Module**: Positioned with a tight digital zoom (Region of Interest) focused on the feeder tray.
-- **12V Solenoid Valve & Relay Module**: Plumbed into a garden hose, wired to GPIO 17 on the Pi.
+- **12V Solenoid Valve & Relay Module**: Plumbed into a garden hose and controlled through a properly rated Pi GPIO driver.
 
 ---
 
@@ -91,7 +100,9 @@ A high-tech sentry needs a command center. I updated the web app to feature a mo
 ### 📊 The 7-Day Activity Graph
 Using **Chart.js**, the dashboard aggregates event data from a persistent `data/blasts_log.json` file. It displays a dual-bar chart representing water blasts over the last 7 days, color-coding auto-detections (green) and manual sprays (blue) side-by-side.
 
-The system also builds daily compilation videos from spray recordings. The July 8, 2026 compilation is saved at `data/videos/compilation_20260708.mp4`.
+The system also builds daily compilation videos from spray recordings. Local
+compilation videos are stored under `data/videos/` and are intentionally not
+included in the public repository.
 
 ### 📹 Live Snapshot Feed (The lock-contention problem)
 I wanted a live video feed on the dashboard, but hit an interesting engineering constraint: **device lock contention**. 

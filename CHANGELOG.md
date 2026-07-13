@@ -13,5 +13,5 @@ All notable changes are documented here.
 
 ## 0.1.0
 
-Initial reliability milestone. See `docs/roadmap.md` for the implementation
-history and remaining work.
+Initial reliability milestone. See the architecture and release documents in
+`docs/` for the current system design and maintenance guidance.

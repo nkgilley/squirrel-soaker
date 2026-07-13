@@ -1,14 +1,16 @@
 # Squirrel Soaker 9001
 
+![Squirrel Soaker 9001](Gemini_Generated_Image_29b0xu29b0xu29b0.png)
+
 The **Squirrel Soaker 9001** is an automated, AI-powered garden protection system that detects squirrels at a birdfeeder and gently repels them with a short blast from a water solenoid valve.
 
 The current `main` branch uses a Raspberry Pi 5 with Camera Module 3 for images and solenoid control:
 
 1. **Raspberry Pi 5 with Camera Module 3**. The Pi captures still frames with `rpicam-still`, keeps normal frames in memory, sends them to the Mac app for inference, records spray videos with `rpicam-vid`, and controls the solenoid/button GPIO.
 2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It receives Pi frames, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
-3. **Optional Wyze/IP-camera snapshot feed** remains available through Settings for camera-only experiments.
+3. **Optional IP-camera snapshot feed** remains available through Settings for camera-only experiments.
 
-The current capture path uses Pi still images because they are cleaner for classification than RTSP video frames and avoid depending on the dead Pi 3 or ESP32.
+The current capture path uses Pi still images because they are cleaner for classification than RTSP video frames. The old Pi 3, RTSP, Wyze Bridge, and ESP32 paths are retained only as historical or optional compatibility code.
 
 ---
 
@@ -102,15 +104,17 @@ The included `docker-compose.yml` maps:
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
 - `./model.pth:/app/model.pth` for a locally trained model supplied by the operator.
 - `PI_IP=<pi-address>` so manual web sprays can call the Pi 5 trigger server.
-- `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling the Wyze snapshot bridge.
+- `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling an IP-camera snapshot bridge.
 - `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.
 - `PUBLIC_BASE_URL=http://<server-address>:5001` so notification links use the reachable server address instead of Docker's internal bridge IP.
 
 ---
 
-## Optional ESP32 Solenoid Controller
+## Legacy ESP32 Solenoid Controller
 
-The previous ESP-WROOM-32 ESPHome controller is preserved in `esphome/squirrel-soaker-controller.yaml`, but it is not used by the current Pi 5 deployment.
+The previous ESP-WROOM-32 ESPHome controller is preserved in
+`esphome/squirrel-soaker-controller.yaml`, but it is not used by the current
+Pi 5 deployment. New installations should use the Pi GPIO controller below.
 
 Default wiring:
 
@@ -233,7 +237,7 @@ Most runtime behavior is managed from the web UI Settings view.
 Important settings:
 
 - **Camera Source**: `pi` for the current Raspberry Pi 5 upload path. Legacy snapshot/RTSP fields are hidden behind the advanced camera-source toggle.
-- **Snapshot URL**: optional IP-camera/Wyze snapshot URL if Camera Source is switched back to `snapshot`.
+- **Snapshot URL**: optional IP-camera snapshot URL if Camera Source is switched back to `snapshot`.
 - **Analysis Interval**: how often the app fetches and analyzes a frame. Current default is 5 seconds.
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
 - **Live vs Review Size**: live analysis frames stay smaller for speed, while saved review/classification frames can use a higher Camera Module 3 resolution. The Pi 5 default is 2304x1296 review frames.
@@ -252,7 +256,7 @@ Important settings:
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
 - **Spray Mode**: automation can spray immediately after the decision gate passes, or ask for confirmation first. Confirmation mode sends a notification link to the dashboard with the live image plus spray/dismiss buttons.
-- **Spray Controller**: use `Raspberry Pi` for the Pi 5 deployment. ESPHome remains available only if the ESP32 is put back in service.
+- **Spray Controller**: use `Raspberry Pi` for the current deployment. ESPHome is legacy compatibility code only.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
 Camera calibration lives in the Settings view. For snapshot cameras, the latest captured output is the important preview; the ROI map is mainly for the legacy Pi crop path.
@@ -285,10 +289,6 @@ Dashboard health charts:
 - **Latency**: capture, upload, model, and end-to-end Pi loop time.
 - **Freshness & Motion**: last analyzed frame age and motion score.
 - **Pi Resources**: CPU temperature, SD card use, and SD backlog files.
-
-Daily compilation video:
-
-- `data/videos/compilation_20260708.mp4` contains the July 8, 2026 spray-event compilation.
 
 ---
 
