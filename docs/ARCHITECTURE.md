@@ -3,29 +3,54 @@
 Squirrel Soaker has two cooperating processes:
 
 ```mermaid
-flowchart LR
-  subgraph PI["Raspberry Pi 5"]
-    C["Camera Module 3"] --> L["Capture loop"]
-    L -->|"JPEG + telemetry"| A
-    T["Trigger server"] --> G["GPIO driver"] --> S["Solenoid"]
-    T --> V["Short-lived event video"]
-  end
-  subgraph SERVER["Mac / Docker host"]
-    A["Flask API"] --> M["PyTorch inference"] --> Q["Decision gate + safety"]
-    A --> I["Live image in memory"]
-    Q -->|"authenticated command"| T
-    A --> D[("SQLite + media")]
-    M --> D
-    D --> U["Dashboard + training"]
-  end
-  V -->|"upload"| D
-  SERVER -. "optional night power" .-> K["TP-Link/Kasa plug"]
-  classDef device fill:#dbeafe,stroke:#2563eb,color:#172554
-  classDef app fill:#dcfce7,stroke:#16a34a,color:#14532d
-  classDef data fill:#fef3c7,stroke:#d97706,color:#78350f
-  class C,L,T,G,S,V,K device
-  class A,M,Q,I,U app
-  class D data
+flowchart TB
+    subgraph CAPTURE["RASPBERRY PI 5 · CAPTURE"]
+        direction LR
+        SUN["Sunrise / sunset"] -.-> PLUG["Kasa smart plug"] -.-> NIGHT["NoIR camera"]
+        DAY["Day camera"] --> CAP["RAM-first capture loop"]
+        NIGHT --> CAP
+    end
+
+    subgraph INTELLIGENCE["MAC / DOCKER · AI + SAFETY"]
+        direction LR
+        API["Frame API"] --> MODEL["Day / night inference"]
+        MODEL --> DETECT{"Enough confidence<br/>and repeat hits?"}
+        DETECT --> SAFE{"Mode, cooldown<br/>and budget allow spray?"}
+    end
+
+    subgraph ACTION["RASPBERRY PI 5 · ACTUATION"]
+        direction LR
+        BUTTON["Manual button"] --> TRIGGER["Trigger server<br/>local safety limits"]
+        TRIGGER --> DRIVER["Protected GPIO driver"] --> VALVE["Water solenoid"]
+        TRIGGER --> VIDEO["Event video"]
+    end
+
+    subgraph HISTORY["SERVER · HISTORY + CONTROL"]
+        direction LR
+        EVENTS[("Events + decisions")] --> UI["Dashboard<br/>review · settings · training"]
+        MEDIA[("Images + videos")] --> UI
+    end
+
+    CAP == "JPEG + health telemetry" ==> API
+    SAFE == "authenticated spray command" ==> TRIGGER
+    API --> LIVE["Live preview"] --> MEDIA
+    MODEL --> EVENTS
+    VIDEO == "upload" ==> MEDIA
+
+    classDef pi fill:#e8f1ff,stroke:#3b82f6,color:#172554
+    classDef server fill:#e9f8ef,stroke:#22a06b,color:#153c2b
+    classDef safety fill:#fff4d6,stroke:#d89b18,color:#4a3500
+    classDef data fill:#f3efff,stroke:#7c5ce0,color:#2b1b5a
+    classDef hardware fill:#f1f3f5,stroke:#687076,color:#202428
+    class DAY,NIGHT,CAP,TRIGGER,PLUG pi
+    class API,MODEL,LIVE,SUN server
+    class DETECT,SAFE safety
+    class EVENTS,MEDIA,UI data
+    class BUTTON,VIDEO,DRIVER,VALVE hardware
+    style CAPTURE fill:transparent,stroke:#8aa7d6,stroke-width:1px
+    style INTELLIGENCE fill:transparent,stroke:#79b69a,stroke-width:1px
+    style ACTION fill:transparent,stroke:#8aa7d6,stroke-width:1px
+    style HISTORY fill:transparent,stroke:#9b8ad6,stroke-width:1px
 ```
 
 The Pi is responsible for capture, local actuation, and short-lived video
