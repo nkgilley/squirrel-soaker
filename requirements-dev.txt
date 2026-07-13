@@ -1,2 +1,3 @@
+# Lightweight dependencies used by local development and CI.
 pytest==9.1.1
 ruff==0.15.21

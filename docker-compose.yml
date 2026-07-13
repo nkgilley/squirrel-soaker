@@ -1,3 +1,4 @@
+# Run the Mac/server application with persistent settings, media, and model data.
 services:
   squirrel-soaker:
     build: .

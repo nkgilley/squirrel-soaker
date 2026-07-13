@@ -1,3 +1,5 @@
+"""Verify camera-specific still and video ROI selection."""
+
 import capture
 import trigger_server
 

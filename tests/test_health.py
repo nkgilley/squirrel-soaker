@@ -1,3 +1,5 @@
+"""Verify bounded, thread-safe health-history storage."""
+
 from squirrel_health import HealthStore
 
 

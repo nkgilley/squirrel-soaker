@@ -1,3 +1,5 @@
+"""Verify dependency-free training splits, grouping, and evaluation metrics."""
+
 from squirrel_training import classification_metrics, grouped_split_indices, sample_group
 
 

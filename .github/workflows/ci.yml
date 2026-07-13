@@ -1,3 +1,4 @@
+# Compile, lint, test, and build the production container for every change.
 name: CI
 
 on:

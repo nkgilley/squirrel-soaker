@@ -1,3 +1,4 @@
+# Configure the optional legacy ESP32 relay and manual-button controller.
 substitutions:
   name: squirrel-soaker-controller
   friendly_name: Squirrel Soaker Controller

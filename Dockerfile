@@ -1,3 +1,4 @@
+# Build the production Flask and PyTorch inference container.
 FROM python:3.14-slim
 
 # Prevent Python from writing .pyc files and enable unbuffered logging

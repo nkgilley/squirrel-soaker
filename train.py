@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Train and evaluate day, night, or shared squirrel classifiers with PyTorch."""
+
 import os
 import sys
 import argparse

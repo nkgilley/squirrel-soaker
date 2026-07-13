@@ -1,3 +1,5 @@
+"""Exercise the legacy event-database migration against a temporary test database."""
+
 import os
 import sys
 import datetime

@@ -1,3 +1,4 @@
+# Keep the legacy Raspberry Pi MJPEG stream service available when explicitly enabled.
 [Unit]
 Description=Squirrel Soaker Camera Stream Daemon
 After=network.target

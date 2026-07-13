@@ -1,3 +1,4 @@
+# Run the Raspberry Pi GPIO, spray-video, diagnostics, and backlog HTTP service.
 [Unit]
 Description=Squirrel Soaker Solenoid Trigger Server
 After=network.target

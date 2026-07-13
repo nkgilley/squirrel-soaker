@@ -1,3 +1,5 @@
+"""Verify spray limits, duration bounds, and device authentication helpers."""
+
 import math
 
 import pytest

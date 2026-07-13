@@ -1,3 +1,5 @@
+"""Verify settings normalization, validation, and secret filtering."""
+
 from squirrel_settings import public_device_settings, validate_settings_patch
 
 

@@ -1,3 +1,4 @@
+# Keep the Raspberry Pi still-capture and inference-upload loop running.
 [Unit]
 Description=Squirrel Soaker Camera Capture Daemon
 After=network.target squirrel-trigger.service

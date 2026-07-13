@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Benchmark Pi camera capture and preprocessing for the Diagnostics view."""
+
 import argparse
 import fcntl
 import json

@@ -1,3 +1,5 @@
+"""Run the server-side web UI, inference pipeline, event history, and training workflows."""
+
 import os
 import time
 import shutil

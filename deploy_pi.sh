@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Install the Pi agents and rendered systemd services on the configured SSH host.
 set -euo pipefail
 
 PI_HOST="${PI_HOST:-pi5}"
