@@ -27,6 +27,10 @@ SUNSET_OFFSET_MINUTES = 0
 ROTATION = 180
 ROI = "0.05,0.15,0.3,0.3"
 VIDEO_ROI = "0.0,0.0,0.6,0.6"
+DAY_ROI = ROI
+NIGHT_ROI = ROI
+DAY_VIDEO_ROI = VIDEO_ROI
+NIGHT_VIDEO_ROI = VIDEO_ROI
 VIDEO_ROTATION = 180
 WIDTH = 1280
 HEIGHT = 960
@@ -208,6 +212,7 @@ def get_next_daylight_start(dt):
 
 def fetch_config_from_mac():
     global ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS, ROTATION, ROI, VIDEO_ROI, VIDEO_ROTATION, CONFIDENCE_THRESHOLD
+    global DAY_ROI, NIGHT_ROI, DAY_VIDEO_ROI, NIGHT_VIDEO_ROI
     global ANALYSIS_WIDTH, ANALYSIS_HEIGHT, REVIEW_WIDTH, REVIEW_HEIGHT, ANALYSIS_JPEG_QUALITY, REVIEW_JPEG_QUALITY
     global CAMERA_AWB, CAMERA_EXPOSURE, CAMERA_METERING, CAMERA_SATURATION, CAMERA_CONTRAST, CAMERA_SHARPNESS
     global CAMERA_TUNING_ENABLED, DAY_CAMERA_INDEX, NIGHT_CAMERA_INDEX
@@ -236,6 +241,10 @@ def fetch_config_from_mac():
                     ROI = str(settings['camera_roi']).strip()
                 if 'video_roi' in settings:
                     VIDEO_ROI = str(settings['video_roi']).strip()
+                DAY_ROI = str(settings.get('day_camera_roi', ROI)).strip()
+                NIGHT_ROI = str(settings.get('night_camera_roi', ROI)).strip()
+                DAY_VIDEO_ROI = str(settings.get('day_video_roi', VIDEO_ROI)).strip()
+                NIGHT_VIDEO_ROI = str(settings.get('night_video_roi', VIDEO_ROI)).strip()
                 if 'video_rotation' in settings:
                     VIDEO_ROTATION = int(settings['video_rotation'])
                 else:
@@ -310,13 +319,13 @@ def fetch_config_from_mac():
                 if 'sunset_offset_minutes' in settings:
                     SUNSET_OFFSET_MINUTES = int(settings['sunset_offset_minutes'])
                 daylight_start, daylight_end, daylight_source = get_daylight_window(get_eastern_time())
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROI={14}, VideoRotation={15}, VideoROI={16}, Threshold={17:.2f}, Cameras day={18} night={19}, Daylight={20} {21}-{22}".format(
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROIs day={14} night={15}, VideoRotation={16}, VideoROIs day={17} night={18}, Threshold={19:.2f}, Cameras day={20} night={21}, Daylight={22} {23}-{24}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     REVIEW_WIDTH, REVIEW_HEIGHT, REVIEW_JPEG_QUALITY,
                     CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION,
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
-                    ROTATION, ROI, VIDEO_ROTATION, VIDEO_ROI, CONFIDENCE_THRESHOLD,
+                    ROTATION, DAY_ROI, NIGHT_ROI, VIDEO_ROTATION, DAY_VIDEO_ROI, NIGHT_VIDEO_ROI, CONFIDENCE_THRESHOLD,
                     DAY_CAMERA_INDEX, NIGHT_CAMERA_INDEX,
                     daylight_source,
                     daylight_start.strftime("%H:%M"),
@@ -587,7 +596,7 @@ def find_camera_still_command():
             return binary
     return 'raspistill'
 
-def build_still_command(width, height, jpeg_quality, camera_index=None):
+def build_still_command(width, height, jpeg_quality, camera_index=None, roi=None):
     camera_cmd = find_camera_still_command()
     if camera_cmd in ('rpicam-still', 'libcamera-still'):
         cmd = [
@@ -607,8 +616,9 @@ def build_still_command(width, height, jpeg_quality, camera_index=None):
             cmd.extend(["--rotation", str(ROTATION)])
         elif ROTATION in [90, 270]:
             print("[Camera] Warning: {0} only supports rotation 0 or 180; ignoring rotation {1}.".format(camera_cmd, ROTATION))
-        if ROI:
-            cmd.extend(["--roi", ROI])
+        selected_roi = ROI if roi is None else roi
+        if selected_roi:
+            cmd.extend(["--roi", selected_roi])
         if CAMERA_SENSOR_MODE:
             cmd.extend(["--mode", CAMERA_SENSOR_MODE])
         append_rpicam_focus(cmd)
@@ -625,8 +635,9 @@ def build_still_command(width, height, jpeg_quality, camera_index=None):
     ]
     if ROTATION in [90, 180, 270]:
         cmd.extend(["-rot", str(ROTATION)])
-    if ROI:
-        cmd.extend(["-roi", ROI])
+    selected_roi = ROI if roi is None else roi
+    if selected_roi:
+        cmd.extend(["-roi", selected_roi])
     return cmd
 
 def append_rpicam_focus(cmd):
@@ -655,12 +666,13 @@ def append_rpicam_tuning(cmd):
     cmd.extend(["--contrast", str(CAMERA_CONTRAST)])
     cmd.extend(["--sharpness", str(CAMERA_SHARPNESS)])
 
-def trigger_spray_locally(duration, camera_index=None):
+def trigger_spray_locally(duration, camera_index=None, video_roi=None):
     import urllib.request
     import urllib.parse
 
     try:
-        encoded_roi = urllib.parse.quote(VIDEO_ROI) if VIDEO_ROI else ''
+        selected_roi = VIDEO_ROI if video_roi is None else video_roi
+        encoded_roi = urllib.parse.quote(selected_roi) if selected_roi else ''
         camera_part = '&camera={0}'.format(camera_index) if camera_index is not None else ''
         url = 'http://localhost:8080/spray?duration={0}&rotation={1}&roi={2}{3}'.format(duration, VIDEO_ROTATION, encoded_roi, camera_part)
         req = urllib.request.Request(url, headers=authenticated_headers(), method='POST')
@@ -705,6 +717,8 @@ def capture_image():
     local_time = get_eastern_time()
     camera_period = get_camera_period(local_time)
     camera_index = get_active_camera_index(local_time)
+    camera_roi = DAY_ROI if camera_period == "day" else NIGHT_ROI
+    video_roi = DAY_VIDEO_ROI if camera_period == "day" else NIGHT_VIDEO_ROI
     now_seconds = time.time()
     should_save = (last_review_save_time <= 0.0) or (now_seconds - last_review_save_time >= SAVE_INTERVAL_SECONDS)
     filename = "img_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S"))
@@ -713,7 +727,7 @@ def capture_image():
     capture_height = REVIEW_HEIGHT if should_save else ANALYSIS_HEIGHT
     jpeg_quality = REVIEW_JPEG_QUALITY if should_save else ANALYSIS_JPEG_QUALITY
 
-    cmd = build_still_command(capture_width, capture_height, jpeg_quality, camera_index=camera_index)
+    cmd = build_still_command(capture_width, capture_height, jpeg_quality, camera_index=camera_index, roi=camera_roi)
 
     print("[{0}] Capturing to memory: {1} ({2}x{3} q{4}, save={5}, period={6}, camera={7})".format(
         local_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -774,7 +788,7 @@ def capture_image():
         spray_duration = result.get('spray_duration', 3.0)
         if should_spray:
             print("[Inference] SQUIRREL CONFIRMED! Confidence: {0:.1f}%. Triggering spray for {1}s.".format(confidence * 100, spray_duration))
-            if trigger_spray_locally(spray_duration, camera_index=camera_index):
+            if trigger_spray_locally(spray_duration, camera_index=camera_index, video_roi=video_roi):
                 report_spray_confirm(result, filename, spray_duration)
         else:
             decision = result.get('spray_decision', {})

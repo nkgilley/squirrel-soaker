@@ -75,7 +75,30 @@ def authenticated_headers(extra=None):
         headers.update(extra)
     return headers
 
-def get_local_time_and_defaults():
+def camera_period_for_index(settings, camera_index, local_time=None):
+    if camera_index is not None:
+        try:
+            if int(camera_index) == int(settings.get('night_camera_index', 1)):
+                return 'night'
+            if int(camera_index) == int(settings.get('day_camera_index', 0)):
+                return 'day'
+        except (TypeError, ValueError):
+            pass
+    try:
+        import capture
+        return capture.get_camera_period(local_time or capture.get_eastern_time())
+    except Exception:
+        return 'day'
+
+
+def roi_for_camera(settings, camera_index, kind='video', local_time=None):
+    period = camera_period_for_index(settings, camera_index, local_time=local_time)
+    legacy_key = 'video_roi' if kind == 'video' else 'camera_roi'
+    period_key = '{0}_{1}_roi'.format(period, kind) if kind == 'video' else '{0}_camera_roi'.format(period)
+    return str(settings.get(period_key, settings.get(legacy_key, '')) or '').strip()
+
+
+def get_local_time_and_defaults(camera_index=None, roi_kind='video'):
     global latest_settings
     local_time = datetime.datetime.now()
     default_rot = 0
@@ -85,7 +108,11 @@ def get_local_time_and_defaults():
         import capture
         local_time = capture.get_eastern_time()
         default_rot = getattr(capture, 'ROTATION', default_rot)
-        default_roi = getattr(capture, 'VIDEO_ROI', getattr(capture, 'ROI', None))
+        period = capture.get_camera_period(local_time)
+        if camera_index is not None:
+            period = 'night' if int(camera_index) == int(getattr(capture, 'NIGHT_CAMERA_INDEX', 1)) else 'day'
+        roi_attr = '{0}_{1}'.format(period.upper(), 'VIDEO_ROI' if roi_kind == 'video' else 'ROI')
+        default_roi = getattr(capture, roi_attr, getattr(capture, 'VIDEO_ROI' if roi_kind == 'video' else 'ROI', None))
     except Exception as e:
         print("[Video] Warning: could not import capture config: {0}".format(e))
 
@@ -102,8 +129,7 @@ def get_local_time_and_defaults():
                 default_rot = int(settings['camera_rotation'])
             if 'video_rotation' in settings:
                 default_rot = int(settings['video_rotation'])
-            if 'video_roi' in settings:
-                default_roi = str(settings['video_roi']).strip()
+            default_roi = roi_for_camera(settings, camera_index, kind=roi_kind, local_time=local_time)
     except Exception as e:
         print("[Video] Warning: could not fetch video settings from Mac: {0}".format(e))
 
@@ -356,7 +382,7 @@ def build_video_command(duration_ms, filepath, rotation=None, roi=None, camera_i
 def record_video(duration_ms=5000, rotation=None, roi=None, started_event=None, upload=True, name_prefix='vid', camera_index=None):
     import urllib.parse
 
-    local_time, default_rot, default_roi = get_local_time_and_defaults()
+    local_time, default_rot, default_roi = get_local_time_and_defaults(camera_index=camera_index, roi_kind='video')
     rot = rotation if rotation is not None else default_rot
     selected_roi = roi if roi is not None else default_roi
 
@@ -460,7 +486,7 @@ def build_still_command(filepath, rotation=None, roi=None, camera_index=None):
     return cmd
 
 def test_camera_capture(camera_index=None):
-    local_time, rot, roi = get_local_time_and_defaults()
+    local_time, rot, roi = get_local_time_and_defaults(camera_index=camera_index, roi_kind='still')
     ensure_dir(VIDEO_TMP_DIR)
     filepath = os.path.join(VIDEO_TMP_DIR, "camera_test_{0}.jpg".format(local_time.strftime("%Y%m%d_%H%M%S")))
     cmd = build_still_command(filepath, rotation=rot, roi=roi, camera_index=camera_index)

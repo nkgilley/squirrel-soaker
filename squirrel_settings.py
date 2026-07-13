@@ -51,6 +51,32 @@ CHOICES = {
     'camera_source': {'pi', 'snapshot', 'rtsp'},
 }
 
+ROI_KEYS = {
+    'camera_roi',
+    'video_roi',
+    'day_camera_roi',
+    'night_camera_roi',
+    'day_video_roi',
+    'night_video_roi',
+}
+
+
+def valid_roi(value):
+    if value == '':
+        return True
+    try:
+        x, y, width, height = [float(part.strip()) for part in value.split(',')]
+    except (TypeError, ValueError):
+        return False
+    return (
+        0 <= x <= 1
+        and 0 <= y <= 1
+        and 0 < width <= 1
+        and 0 < height <= 1
+        and x + width <= 1
+        and y + height <= 1
+    )
+
 
 def validate_settings_patch(data, defaults, maximum_spray_seconds=10.0):
     if not isinstance(data, dict):
@@ -91,6 +117,9 @@ def validate_settings_patch(data, defaults, maximum_spray_seconds=10.0):
 
         if key in CHOICES and normalized[key] not in CHOICES[key]:
             errors.append('{0} must be one of: {1}'.format(key, ', '.join(sorted(CHOICES[key]))))
+
+        if key in ROI_KEYS and not valid_roi(normalized[key]):
+            errors.append('{0} must be empty or x,y,width,height values contained within 0-1'.format(key))
 
     if errors:
         return {}, errors

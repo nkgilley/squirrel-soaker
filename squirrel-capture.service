@@ -6,11 +6,11 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/squirrel_soaker
+User=@PI_USER@
+WorkingDirectory=@PI_APP_DIR@
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/home/pi/squirrel_soaker/device.env
-ExecStart=/usr/bin/python3 -u /home/pi/squirrel_soaker/capture.py
+EnvironmentFile=@PI_APP_DIR@/device.env
+ExecStart=/usr/bin/python3 -u @PI_APP_DIR@/capture.py
 Restart=always
 RestartSec=10
 NoNewPrivileges=true

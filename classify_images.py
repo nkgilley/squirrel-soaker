@@ -441,8 +441,12 @@ default_settings = {
     'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
     'camera_rotation': 180,
     'camera_roi': '0.05,0.15,0.3,0.3',
+    'day_camera_roi': '0.05,0.15,0.3,0.3',
+    'night_camera_roi': '0.05,0.15,0.3,0.3',
     'video_rotation': 180,
     'video_roi': '0.0,0.0,0.6,0.6',
+    'day_video_roi': '0.0,0.0,0.6,0.6',
+    'night_video_roi': '0.0,0.0,0.6,0.6',
     'camera_awb': 'auto',
     'camera_exposure': 'normal',
     'camera_metering': 'centre',
@@ -512,6 +516,14 @@ def load_settings():
                     merged['day_model'] = merged.get('active_model', default_settings['active_model'])
                 if 'night_model' not in settings:
                     merged['night_model'] = merged.get('active_model', default_settings['active_model'])
+                if 'day_camera_roi' not in settings:
+                    merged['day_camera_roi'] = merged.get('camera_roi', default_settings['camera_roi'])
+                if 'night_camera_roi' not in settings:
+                    merged['night_camera_roi'] = merged.get('camera_roi', default_settings['camera_roi'])
+                if 'day_video_roi' not in settings:
+                    merged['day_video_roi'] = merged.get('video_roi', default_settings['video_roi'])
+                if 'night_video_roi' not in settings:
+                    merged['night_video_roi'] = merged.get('video_roi', default_settings['video_roi'])
                 return merged
         except Exception as e:
             print("Error loading settings:", e)
@@ -3584,8 +3596,11 @@ HTML_TEMPLATE = """
         }
 
         function updateSettingsCalibration(settings = null) {
-            const roiInput = document.getElementById('settings-roi');
-            const roi = roiInput ? roiInput.value.trim() : (settings && settings.camera_roi) || '';
+            const period = document.getElementById('settings-calibration-period')?.value || 'day';
+            const roiKey = period === 'night' ? 'night_camera_roi' : 'day_camera_roi';
+            const roiInputId = period === 'night' ? 'settings-night-roi' : 'settings-day-roi';
+            const roiInput = document.getElementById(roiInputId);
+            const roi = roiInput ? roiInput.value.trim() : (settings && settings[roiKey]) || '';
             const img = document.getElementById('settings-calibration-img');
             const details = document.getElementById('settings-calibration-details');
 
@@ -3596,7 +3611,8 @@ HTML_TEMPLATE = """
                 const analysisWidth = settings ? settings.analysis_width : document.getElementById('settings-analysis-width')?.value;
                 const analysisHeight = settings ? settings.analysis_height : document.getElementById('settings-analysis-height')?.value;
                 const quality = settings ? settings.analysis_jpeg_quality : document.getElementById('settings-analysis-quality')?.value;
-                details.innerHTML = `Still ROI: ${roi || 'off'}<br>The latest captured output is already zoomed by raspistill. The green box is drawn on the full-frame map to show the source region being cropped before capture.<br>Live output: ${analysisWidth || '--'}x${analysisHeight || '--'} q${quality || '--'}`;
+                const cameraLabel = period === 'night' ? 'NoIR camera' : 'Day camera';
+                details.innerHTML = `${cameraLabel} still ROI: ${roi || 'off'}<br>The latest image is from whichever camera is currently active. The green box shows the selected camera's source crop before capture.<br>Live output: ${analysisWidth || '--'}x${analysisHeight || '--'} q${quality || '--'}`;
             }
         }
 
@@ -4097,8 +4113,10 @@ HTML_TEMPLATE = """
                                 ${settingsField('settings-camera-autofocus-window', 'AF Window', 'text', 'placeholder="0.45,0.35,0.5,0.55"')}
                                 ${settingsSelect('settings-rotation', 'Still Rotation', [['0', '0'], ['90', '90'], ['180', '180'], ['270', '270']])}
                                 ${settingsSelect('settings-video-rotation', 'Video Rotation', [['0', '0'], ['180', '180']])}
-                                ${settingsField('settings-roi', 'Still ROI', 'text', 'placeholder="x,y,w,h"')}
-                                ${settingsField('settings-video-roi', 'Video ROI', 'text', 'placeholder="x,y,w,h"')}
+                                ${settingsField('settings-day-roi', 'Day Still ROI', 'text', 'placeholder="x,y,w,h"')}
+                                ${settingsField('settings-night-roi', 'NoIR Still ROI', 'text', 'placeholder="x,y,w,h"')}
+                                ${settingsField('settings-day-video-roi', 'Day Video ROI', 'text', 'placeholder="x,y,w,h"')}
+                                ${settingsField('settings-night-video-roi', 'NoIR Video ROI', 'text', 'placeholder="x,y,w,h"')}
                                 ${settingsField('settings-day-camera-index', 'Day Camera Index', 'number', 'min="0" max="3" step="1"', 'Normal Camera Module 3.')}
                                 ${settingsField('settings-night-camera-index', 'Night Camera Index', 'number', 'min="0" max="3" step="1"', 'NoIR Camera Module 3.')}
                                 ${settingsField('settings-ir-camera-plug-ip', 'IR Camera Plug IP', 'text', 'placeholder="192.0.2.50"', 'Optional TP-Link/Kasa plug used to power the NoIR camera at night.')}
@@ -4130,9 +4148,12 @@ HTML_TEMPLATE = """
 
                         <section class="settings-panel settings-panel-wide">
                             <h3>Camera Calibration</h3>
+                            <div style="max-width: 260px; margin-bottom: 0.85rem;">
+                                ${settingsSelect('settings-calibration-period', 'ROI to preview', [['day', 'Day camera'], ['night', 'NoIR camera']])}
+                            </div>
                             <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem;">
                                 <div>
-                                    <div class="settings-help" style="margin-bottom: 0.45rem;">Latest captured output</div>
+                                    <div class="settings-help" style="margin-bottom: 0.45rem;">Latest active-camera output</div>
                                     <div style="position: relative; width: 100%; aspect-ratio: 4 / 3; background: #020617; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden;">
                                         <img id="settings-calibration-img" src="/api/latest_image?t=${Date.now()}" style="width: 100%; height: 100%; object-fit: cover;">
                                     </div>
@@ -4467,9 +4488,11 @@ HTML_TEMPLATE = """
                     setSettingValue('settings-motion-force', loadedSettings.motion_force_interval || 30);
                     setSettingValue('settings-gemini-key', loadedSettings.gemini_api_key || '');
                     setSettingValue('settings-rotation', loadedSettings.camera_rotation);
-                    setSettingValue('settings-roi', loadedSettings.camera_roi);
+                    setSettingValue('settings-day-roi', loadedSettings.day_camera_roi ?? loadedSettings.camera_roi ?? '');
+                    setSettingValue('settings-night-roi', loadedSettings.night_camera_roi ?? loadedSettings.camera_roi ?? '');
                     setSettingValue('settings-video-rotation', loadedSettings.video_rotation ?? loadedSettings.camera_rotation ?? 0);
-                    setSettingValue('settings-video-roi', loadedSettings.video_roi || '');
+                    setSettingValue('settings-day-video-roi', loadedSettings.day_video_roi ?? loadedSettings.video_roi ?? '');
+                    setSettingValue('settings-night-video-roi', loadedSettings.night_video_roi ?? loadedSettings.video_roi ?? '');
                     setSettingValue('settings-day-camera-index', loadedSettings.day_camera_index ?? 0);
                     setSettingValue('settings-night-camera-index', loadedSettings.night_camera_index ?? 1);
                     setSettingValue('settings-ir-camera-plug-ip', loadedSettings.ir_camera_plug_ip || '');
@@ -4520,11 +4543,13 @@ HTML_TEMPLATE = """
                         renderAccuraciesTable(data.model_accuracies);
                     }
                     updateSettingsCalibration(data.settings);
-                    const roiInput = document.getElementById('settings-roi');
-                    if (roiInput && !roiInput.dataset.calibrationBound) {
-                        roiInput.addEventListener('input', () => updateSettingsCalibration(data.settings));
-                        roiInput.dataset.calibrationBound = 'true';
-                    }
+                    ['settings-day-roi', 'settings-night-roi', 'settings-calibration-period'].forEach(id => {
+                        const input = document.getElementById(id);
+                        if (input && !input.dataset.calibrationBound) {
+                            input.addEventListener(id === 'settings-calibration-period' ? 'change' : 'input', () => updateSettingsCalibration(data.settings));
+                            input.dataset.calibrationBound = 'true';
+                        }
+                    });
                 }
             } catch (e) {
                 console.error("Error fetching settings:", e);
@@ -4567,9 +4592,13 @@ HTML_TEMPLATE = """
             const motion_force_interval = parseInt(getSettingValue('settings-motion-force', loadedSettings.motion_force_interval || 30));
             const gemini_api_key = getSettingValue('settings-gemini-key', loadedSettings.gemini_api_key || '');
             const camera_rotation = parseInt(getSettingValue('settings-rotation', loadedSettings.camera_rotation ?? 180));
-            const camera_roi = getSettingValue('settings-roi', loadedSettings.camera_roi || '');
+            const day_camera_roi = getSettingValue('settings-day-roi', loadedSettings.day_camera_roi ?? loadedSettings.camera_roi ?? '');
+            const night_camera_roi = getSettingValue('settings-night-roi', loadedSettings.night_camera_roi ?? loadedSettings.camera_roi ?? '');
+            const camera_roi = day_camera_roi;
             const video_rotation = parseInt(getSettingValue('settings-video-rotation', loadedSettings.video_rotation ?? loadedSettings.camera_rotation ?? 0));
-            const video_roi = getSettingValue('settings-video-roi', loadedSettings.video_roi || '');
+            const day_video_roi = getSettingValue('settings-day-video-roi', loadedSettings.day_video_roi ?? loadedSettings.video_roi ?? '');
+            const night_video_roi = getSettingValue('settings-night-video-roi', loadedSettings.night_video_roi ?? loadedSettings.video_roi ?? '');
+            const video_roi = day_video_roi;
             const day_camera_index = parseInt(getSettingValue('settings-day-camera-index', loadedSettings.day_camera_index ?? 0));
             const night_camera_index = parseInt(getSettingValue('settings-night-camera-index', loadedSettings.night_camera_index ?? 1));
             const ir_camera_plug_ip = getSettingValue('settings-ir-camera-plug-ip', loadedSettings.ir_camera_plug_ip || '');
@@ -4646,8 +4675,12 @@ HTML_TEMPLATE = """
                         gemini_api_key,
                         camera_rotation,
                         camera_roi,
+                        day_camera_roi,
+                        night_camera_roi,
                         video_rotation,
                         video_roi,
+                        day_video_roi,
+                        night_video_roi,
                         day_camera_index,
                         night_camera_index,
                         ir_camera_plug_ip,
@@ -7511,7 +7544,11 @@ def api_health():
             'daylight_start_hour': settings.get('daylight_start_hour'),
             'daylight_end_hour': settings.get('daylight_end_hour'),
             'camera_roi': settings.get('camera_roi'),
+            'day_camera_roi': settings.get('day_camera_roi'),
+            'night_camera_roi': settings.get('night_camera_roi'),
             'video_roi': settings.get('video_roi'),
+            'day_video_roi': settings.get('day_video_roi'),
+            'night_video_roi': settings.get('night_video_roi'),
             'camera_rotation': settings.get('camera_rotation'),
             'video_rotation': settings.get('video_rotation'),
             'camera_awb': settings.get('camera_awb'),
@@ -8161,9 +8198,10 @@ def trigger_spray_on_pi(duration):
     try:
         settings = load_settings()
         rotation = settings.get('video_rotation', settings.get('camera_rotation', 0))
-        roi = settings.get('video_roi', '')
         daylight = get_daylight_status(settings)
-        camera_index = settings.get('day_camera_index', 0) if daylight.get('is_daylight') else settings.get('night_camera_index', 1)
+        is_daylight = daylight.get('is_daylight')
+        camera_index = settings.get('day_camera_index', 0) if is_daylight else settings.get('night_camera_index', 1)
+        roi = settings.get('day_video_roi', settings.get('video_roi', '')) if is_daylight else settings.get('night_video_roi', settings.get('video_roi', ''))
         encoded_roi = urllib.parse.quote(roi) if roi else ''
         url = 'http://{}:8080/spray?duration={}&rotation={}&roi={}&camera={}'.format(PI_IP, duration, rotation, encoded_roi, camera_index)
         req = urllib.request.Request(url, headers=authenticated_device_headers(), method='POST')

@@ -183,8 +183,8 @@ the shared `data/dataset/` directory.
 
 Model weights are intentionally not included in this repository. Each
 installation must train its own classifier from its own camera and feeder
-data, then place the resulting `model.pth` in the project directory (or mount
-it at `/app/model.pth` for Docker). Model files are ignored by Git.
+data. Docker training promotes timestamped checkpoints into the persistent
+`data/models/` directory. Model files are ignored by Git.
 
 ### Option B: Docker
 
@@ -197,8 +197,7 @@ docker compose up -d --build
 The included `docker-compose.yml` maps:
 
 - `5001:5001` for the web app.
-- `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
-- `./model.pth:/app/model.pth` for a locally trained model supplied by the operator.
+- `./data:/app/data` for persistent images, videos, labels, settings, SQLite data, and locally trained checkpoints under `data/models/`.
 - `PI_IP=<pi-address>` so manual web sprays can call the Pi 5 trigger server.
 - `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling an IP-camera snapshot bridge.
 - `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.
@@ -282,7 +281,8 @@ The Pi scripts need the Mac/Docker host IP:
 MAC_IP=<server-address>
 ```
 
-Update that value in `capture.py` and `trigger_server.py` if the server host changes.
+Set that value in `.env`; `deploy_pi.sh` writes it to the private Pi
+`device.env` file alongside the device token.
 
 ### Deploy to the Pi
 
@@ -349,15 +349,14 @@ Important settings:
 - **Save Interval**: how often review images are saved for later classification. Current default is 30 seconds, though local settings may override this.
 - **Live vs Review Size**: live analysis frames stay smaller for speed, while saved review/classification frames can use a higher Camera Module 3 resolution. The Pi 5 default is 2304x1296 review frames.
 - **Sensor Mode**: default `2304:1296:10:P`, forcing live and review captures through the same Camera Module 3 sensor mode so ROI/crop stays aligned across 5-second live frames and 30-second review frames.
-- **Video ROI**: spray videos use their own ROI, but still use the same Camera Module 3 sensor mode as still captures so video and preview crops are comparable.
+- **Day/NoIR Still ROI**: each camera has its own normalized `x,y,width,height` crop, so differently mounted cameras can frame the same feeder area.
+- **Day/NoIR Video ROI**: each camera also has an independent spray-video crop. The active period's video ROI follows manual, confirmed, and automatic sprays.
 - **Focus Mode**: Camera Module 3 focus is explicit. The current setup uses auto-on-capture by default; a full-frame diagnostic picked a lens position near `1.1`. Manual focus is available in Settings, but a bad manual value can make every frame look dramatically blurry.
 - **Camera/Video Rotation**: still and video rotation are separate settings because Pi camera still and video paths can need different orientation values.
 - **Camera Module 3 Tuning**: AWB, exposure, metering, saturation, contrast, and sharpness are configurable. Defaults are neutral for a normal Camera Module 3.
 - **Daylight Schedule**: camera/model switching can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable; capture continues during the night period.
 - **Analysis Size and JPEG Quality**: smaller/faster transient frames.
 - **Review JPEG Quality**: higher quality frames saved for classification.
-- **Camera ROI**: legacy Pi still-image crop.
-- **Video ROI**: legacy Pi/video crop used for spray event videos.
 - **Day/Night Camera Indexes**: select the normal Camera Module 3 for day frames and Camera Module 3 NoIR for night frames. Defaults are `0` and `1`.
 - **Day/Night Models**: select independent model checkpoints because NoIR contrast, color, noise, and illumination differ substantially from daytime images.
 - **IR Camera Plug**: optionally enable TP-Link/Kasa local control and enter the plug's LAN IP. The app turns it on during the night period and off during the day period. Leave it disabled unless the NoIR camera or IR illuminator is powered through that plug.
@@ -368,7 +367,10 @@ Important settings:
 - **Spray Controller**: use `Raspberry Pi` for the current deployment. ESPHome is legacy compatibility code only.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
-Camera calibration lives in the Settings view. For snapshot cameras, the latest captured output is the important preview; the ROI map is mainly for the legacy Pi crop path.
+Camera calibration lives in the Settings view. Select **Day camera** or **NoIR
+camera** above the ROI map to preview that camera's still crop. The latest image
+remains the output from whichever camera is currently active; use Pi Diagnostics
+to take an immediate test image from either camera after changing its ROI.
 
 ---
 

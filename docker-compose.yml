@@ -8,8 +8,6 @@ services:
     volumes:
       # Persist images, videos, and dataset folders on the host
       - ./data:/app/data
-      # Optionally mount model.pth to persist model updates
-      - ./model.pth:/app/model.pth
     environment:
       - TZ=America/New_York
       - PI_IP=${PI_IP:-}

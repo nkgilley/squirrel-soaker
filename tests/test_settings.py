@@ -7,6 +7,10 @@ DEFAULTS = {
     'motion_prefilter_enabled': True,
     'spray_mode': 'auto',
     'camera_roi': '',
+    'day_camera_roi': '',
+    'night_camera_roi': '',
+    'day_video_roi': '',
+    'night_video_roi': '',
     'gemini_api_key': '',
     'join_api_key': '',
     'email_to': '',
@@ -71,3 +75,26 @@ def test_ir_plug_ip_is_accepted_when_enabled():
     )
     assert not errors
     assert values['ir_camera_plug_ip'] == '192.0.2.50'
+
+
+def test_camera_specific_rois_are_validated():
+    values, errors = validate_settings_patch(
+        {
+            'day_camera_roi': '0.1,0.2,0.5,0.6',
+            'night_camera_roi': '0,0,1,1',
+            'day_video_roi': '',
+            'night_video_roi': '0.25,0.25,0.5,0.5',
+        },
+        DEFAULTS,
+    )
+    assert not errors
+    assert values['night_camera_roi'] == '0,0,1,1'
+
+
+def test_camera_specific_roi_cannot_extend_past_sensor_bounds():
+    values, errors = validate_settings_patch(
+        {'night_camera_roi': '0.75,0.2,0.5,0.5'},
+        DEFAULTS,
+    )
+    assert values == {}
+    assert 'night_camera_roi must be empty or x,y,width,height values contained within 0-1' in errors
