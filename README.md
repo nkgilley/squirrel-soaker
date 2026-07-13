@@ -74,17 +74,60 @@ Normal camera operation keeps media on the Mac/server:
 - Review frames are saved on the Mac, not the Pi.
 - Spray/detection history is stored as durable blast events; videos are media attachments, so deleting video files does not remove false-positive or accuracy history.
 
+### Day and NoIR Night Cameras
+
+The Pi 5 can run two Camera Module 3 cameras at the same time: a normal camera
+for daylight and a Camera Module 3 NoIR for darkness. The default camera
+indexes are `0` for day and `1` for night. Confirm the indexes on the Pi before
+configuring them:
+
+```bash
+rpicam-hello --list-cameras
+```
+
+At the configured sunrise/sunset boundary, the capture service automatically:
+
+1. Selects the normal or NoIR camera index.
+2. Tags the uploaded frame as `day` or `night`.
+3. Runs the matching day or night model on the server.
+4. Uses the active camera for any spray-event video recorded during that period.
+
+The schedule can follow local sunrise and sunset using configurable latitude,
+longitude, and offsets, or use fixed hours. Capture continues all night; the
+schedule changes the active camera and model rather than putting the system to
+sleep.
+
+A NoIR camera removes the infrared-blocking filter, but it does not create
+infrared light. Night operation therefore needs a separate IR illuminator or
+another source of IR light. An 850 nm illuminator generally gives stronger
+camera visibility with a faint red glow; 940 nm is less visible but usually
+has less range. Avoid aiming IR through a window because reflections can wash
+out the image.
+
+The optional TP-Link/Kasa integration controls power to the night camera or
+its IR illumination equipment. Enter the plug's fixed LAN IP and enable **IR
+Camera Plug** in Settings. The server requests power on during the night period
+and off during the day period. Camera-index switching works independently, so
+leave plug control disabled when both cameras are powered directly by the Pi.
+
+Use **Pi Diagnostics** to test the day and NoIR cameras separately before
+enabling automation. Check framing, focus, exposure, and IR illumination in
+actual darkness; daytime testing alone is not representative of the night
+image. Camera Module 3 NoIR supports autofocus, but a case pressing on the lens
+or restricting lens movement can still produce consistently blurry images.
+
 ---
 
 ## Hardware Requirements
 
-1. Raspberry Pi 5 with Camera Module 3.
-2. Docker Desktop on the Mac/server, running `squirrel-soaker`.
-3. 12V normally closed solenoid valve.
-4. Relay/transistor controller for the 12V solenoid. The previous Pi GPIO controller still works from the `pi-camera-legacy` branch.
-5. Momentary push button wired to the controller for manual sprays.
-6. 12V DC power supply for the solenoid valve.
-7. Tubing and nozzle mounted near the birdfeeder.
+1. Raspberry Pi 5 with a normal Camera Module 3 for daytime capture.
+2. Camera Module 3 NoIR for nighttime capture, plus suitable IR illumination.
+3. Optional TP-Link/Kasa smart plug for scheduled night-camera or illuminator power.
+4. Docker Desktop on the Mac/server, running `squirrel-soaker`.
+5. 12V normally closed solenoid valve.
+6. Relay/transistor controller for the 12V solenoid.
+7. Momentary push button wired to the Pi for manual sprays.
+8. 12V DC power supply, tubing, and a nozzle mounted near the birdfeeder.
 
 ---
 
@@ -115,11 +158,28 @@ To train the classifier, put images in:
 - `data/dataset/squirrel/`
 - `data/dataset/not_squirrel/`
 
+For camera-specific training, use the same class folders under:
+
+- `data/dataset_day/`
+- `data/dataset_night/`
+
 Then run:
 
 ```bash
 python train.py
 ```
+
+Train the two camera periods independently with:
+
+```bash
+python train.py --period day
+python train.py --period night
+```
+
+The Training view exposes the same period selector. After training, choose
+whether the timestamped checkpoint becomes the day model, night model, or both.
+If a period-specific dataset directory does not exist, training falls back to
+the shared `data/dataset/` directory.
 
 Model weights are intentionally not included in this repository. Each
 installation must train its own classifier from its own camera and feeder
@@ -203,6 +263,17 @@ sudo apt-get install -y python3-pil python3-gpiozero python3-lgpio rpicam-apps
 
 Current Raspberry Pi OS uses `rpicam-still` and `rpicam-vid`. The Pi scripts auto-detect those tools first, then fall back to `libcamera-*` or legacy `raspistill`/`raspivid` if present.
 
+With both cameras connected, verify that Raspberry Pi OS detects each one and
+note the index assigned to the normal and NoIR modules:
+
+```bash
+rpicam-hello --list-cameras
+```
+
+The defaults expect the day camera at index `0` and NoIR camera at index `1`.
+Change **Day Camera Index** and **Night Camera Index** in Settings if the order
+is reversed.
+
 ### Configure Host IP
 
 The Pi scripts need the Mac/Docker host IP:
@@ -282,12 +353,14 @@ Important settings:
 - **Focus Mode**: Camera Module 3 focus is explicit. The current setup uses auto-on-capture by default; a full-frame diagnostic picked a lens position near `1.1`. Manual focus is available in Settings, but a bad manual value can make every frame look dramatically blurry.
 - **Camera/Video Rotation**: still and video rotation are separate settings because Pi camera still and video paths can need different orientation values.
 - **Camera Module 3 Tuning**: AWB, exposure, metering, saturation, contrast, and sharpness are configurable. Defaults are neutral for a normal Camera Module 3.
-- **Daylight Schedule**: nighttime capture pause can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable.
+- **Daylight Schedule**: camera/model switching can use sunrise/sunset, defaulting to Reston, VA, or fixed start/end hours. Latitude, longitude, and sunrise/sunset offsets are configurable; capture continues during the night period.
 - **Analysis Size and JPEG Quality**: smaller/faster transient frames.
 - **Review JPEG Quality**: higher quality frames saved for classification.
 - **Camera ROI**: legacy Pi still-image crop.
 - **Video ROI**: legacy Pi/video crop used for spray event videos.
-- **IR Camera Plug**: optionally enable TP-Link/Kasa local control and enter the plug's LAN IP. The app turns it on during the night period and off during the day period. Leave it disabled unless the NoIR camera is physically powered through that plug.
+- **Day/Night Camera Indexes**: select the normal Camera Module 3 for day frames and Camera Module 3 NoIR for night frames. Defaults are `0` and `1`.
+- **Day/Night Models**: select independent model checkpoints because NoIR contrast, color, noise, and illumination differ substantially from daytime images.
+- **IR Camera Plug**: optionally enable TP-Link/Kasa local control and enter the plug's LAN IP. The app turns it on during the night period and off during the day period. Leave it disabled unless the NoIR camera or IR illuminator is powered through that plug.
 - **Camera Rotation**: legacy Pi camera rotation.
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
