@@ -83,6 +83,11 @@ Then run:
 python train.py
 ```
 
+Model weights are intentionally not included in this repository. Each
+installation must train its own classifier from its own camera and feeder
+data, then place the resulting `model.pth` in the project directory (or mount
+it at `/app/model.pth` for Docker). Model files are ignored by Git.
+
 ### Option B: Docker
 
 Docker is the normal deployment path for the Mac/server app.
@@ -95,7 +100,7 @@ The included `docker-compose.yml` maps:
 
 - `5001:5001` for the web app.
 - `./data:/app/data` for persistent images, videos, labels, settings, and SQLite data.
-- `./model.pth:/app/model.pth` for persistent model weights.
+- `./model.pth:/app/model.pth` for a locally trained model supplied by the operator.
 - `PI_IP=<pi-address>` so manual web sprays can call the Pi 5 trigger server.
 - `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling the Wyze snapshot bridge.
 - `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.

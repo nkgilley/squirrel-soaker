@@ -6,6 +6,11 @@ data/
 __pycache__/
 *.pyc
 .DS_Store
+*.pth
+*.pt
+*.onnx
+*.safetensors
+model.pth.sha256
 test_rot0.jpg
 test_camera.jpg
 pi-home-backup-*/
