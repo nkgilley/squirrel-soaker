@@ -15,7 +15,12 @@ import platform
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from squirrel_safety import SprayBudget, bounded_duration, device_auth_headers, device_token_matches
+from squirrel_soaker.safety import SprayBudget, bounded_duration, device_auth_headers, device_token_matches
+
+try:
+    from . import capture
+except ImportError:
+    import capture
 
 GPIO_BACKEND = None
 GPIO = None
@@ -85,7 +90,6 @@ def camera_period_for_index(settings, camera_index, local_time=None):
         except (TypeError, ValueError):
             pass
     try:
-        import capture
         return capture.get_camera_period(local_time or capture.get_eastern_time())
     except Exception:
         return 'day'
@@ -105,7 +109,6 @@ def get_local_time_and_defaults(camera_index=None, roi_kind='video'):
     default_roi = None
 
     try:
-        import capture
         local_time = capture.get_eastern_time()
         default_rot = getattr(capture, 'ROTATION', default_rot)
         period = capture.get_camera_period(local_time)
@@ -155,7 +158,6 @@ def get_camera_sensor_mode():
 
 def get_default_camera_index():
     try:
-        import capture
         try:
             capture.fetch_config_from_mac()
         except Exception:

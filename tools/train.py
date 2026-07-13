@@ -13,7 +13,7 @@ import torch.optim as optim
 from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader, Subset
 from PIL import ImageFile
-from squirrel_training import classification_metrics, grouped_split_indices
+from squirrel_soaker.training import classification_metrics, grouped_split_indices
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -54,7 +54,7 @@ def choose_dataset(base_dir, period):
 
 
 def train_model(period='all', seed=42, epochs=10):
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if period not in ('all', 'day', 'night'):
         raise ValueError('period must be all, day, or night')
     DATASET_DIR = choose_dataset(BASE_DIR, period) if period != 'all' else os.path.join(BASE_DIR, 'data', 'dataset')

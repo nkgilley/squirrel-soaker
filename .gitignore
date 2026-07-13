@@ -1,8 +1,6 @@
 # Keep local credentials, runtime data, generated media, and model weights out of Git.
 .env
 .venv/
-esphome/secrets.yaml
-.esphome/
 data/
 __pycache__/
 *.pyc

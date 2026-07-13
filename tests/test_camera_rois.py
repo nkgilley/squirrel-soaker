@@ -1,7 +1,6 @@
 """Verify camera-specific still and video ROI selection."""
 
-import capture
-import trigger_server
+from pi import capture, trigger_server
 
 
 def test_still_command_uses_explicit_camera_roi(monkeypatch):

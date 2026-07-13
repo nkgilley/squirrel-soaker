@@ -7,6 +7,7 @@ import subprocess
 import hashlib
 import json
 import ipaddress
+import sys
 from flask import Flask, jsonify, request, send_from_directory, render_template_string, g
 import threading
 import uuid
@@ -17,9 +18,9 @@ from collections import deque
 from functools import wraps
 from PIL import ImageFile
 
-from squirrel_safety import DetectionGate, bounded_duration, device_auth_headers, device_token_matches
-from squirrel_health import HealthStore
-from squirrel_settings import public_device_settings, validate_settings_patch
+from squirrel_soaker.safety import DetectionGate, bounded_duration, device_auth_headers, device_token_matches
+from squirrel_soaker.health import HealthStore
+from squirrel_soaker.settings import public_device_settings, validate_settings_patch
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 app = Flask(__name__)
@@ -475,8 +476,6 @@ default_settings = {
     'spray_duration': 3.0,
     'long_spray_duration': 5.0,
     'long_spray_threshold_hours': 2.0,
-    'spray_controller_type': os.environ.get('SPRAY_CONTROLLER_TYPE', 'pi'),
-    'spray_controller_url': os.environ.get('SPRAY_CONTROLLER_URL', 'http://squirrel-soaker-controller.local'),
     'retention_days_raw': 3,
     'retention_days_not_squirrel': 7,
     'retention_min_not_squirrel': 1000,
@@ -638,7 +637,7 @@ def sync_ir_camera_plug(settings, camera_period):
     def switch():
         global ir_plug_status
         try:
-            from squirrel_kasa import set_power
+            from squirrel_soaker.kasa import set_power
             result = set_power(ip_address, target)
             with ir_plug_lock:
                 ir_plug_status = {'configured': True, 'status': 'on' if target else 'off', **result}
@@ -731,8 +730,7 @@ def get_local_base_url():
     return "http://{0}:5001".format(local_ip)
 
 def send_blast_notification(blast_type, confidence=None, image_filename=None):
-    # Instead of running sync_images.sh (which fails in Docker), we poll for the newly
-    # uploaded and converted video file to arrive in data/videos/ from the Pi.
+    # Poll for the newly uploaded and converted Pi video to arrive in data/videos/.
     video_path = None
     video_filename = None
 
@@ -4620,8 +4618,6 @@ HTML_TEMPLATE = """
             const spray_decision_average_confidence = parseFloat(getSettingValue('settings-decision-average', loadedSettings.spray_decision_average_confidence ?? 0.75));
             const spray_cooldown_seconds = parseInt(getSettingValue('settings-cooldown', loadedSettings.spray_cooldown_seconds || 60));
             const spray_duration = parseFloat(getSettingValue('settings-spray-duration', loadedSettings.spray_duration || 3.0));
-            const spray_controller_type = 'pi';
-            const spray_controller_url = loadedSettings.spray_controller_url || 'http://squirrel-soaker-controller.local';
             const long_spray_duration = parseFloat(getSettingValue('settings-long-duration', loadedSettings.long_spray_duration || 5.0));
             const long_spray_threshold_hours = parseFloat(getSettingValue('settings-threshold', loadedSettings.long_spray_threshold_hours || 2.0));
             const retention_days_raw = parseFloat(getSettingValue('settings-retention-raw', loadedSettings.retention_days_raw || 3.0));
@@ -4702,8 +4698,6 @@ HTML_TEMPLATE = """
                         spray_decision_average_confidence,
                         spray_cooldown_seconds,
                         spray_duration,
-                        spray_controller_type,
-                        spray_controller_url,
                         long_spray_duration,
                         long_spray_threshold_hours,
                         retention_days_raw,
@@ -7162,62 +7156,25 @@ def sync():
 
     data = request.get_json(silent=True) or {}
     use_gemini = data.get('auto_label', False)
-    settings = load_settings()
-    enable_rtsp = settings.get('enable_rtsp', True)
-
     try:
-        res_stdout = ""
-        if not enable_rtsp:
-            # Trigger the Pi to push its backlog
-            pi_sync_url = 'http://{0}:8080/sync'.format(PI_IP)
-            log_message("[Sync] Triggering Pi to push backlog files: {0}".format(pi_sync_url))
-            pi_sync_success = False
-            pi_sync_error = None
-
-            try:
-                import urllib.request
-                req = urllib.request.Request(pi_sync_url, headers=authenticated_device_headers(), method='POST')
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    response.read()
-                pi_sync_success = True
-                log_message("[Sync] Pi backlog push triggered successfully.")
-            except Exception as pe:
-                pi_sync_error = str(pe)
-                log_message("[Sync] Pi push sync failed or Pi offline: {0}".format(pe))
-
-            # Fallback to local sync_images.sh pull script if Pi trigger fails (e.g. running outside Docker or Pi trigger server offline)
-            if not pi_sync_success:
-                is_docker = os.path.exists('/.dockerenv') or os.environ.get('RUNNING_IN_DOCKER') == 'true'
-                if is_docker:
-                    log_message("[Sync] Pi push sync failed/offline and running inside Docker. Cannot fallback to local pull ssh (hostname/keys unavailable).")
-                    raise Exception("Pi trigger sync failed: {0}. Please ensure trigger_server.py is updated on the Pi and the Pi is online.".format(pi_sync_error))
-
-                log_message("[Sync] Falling back to local pull sync via sync_images.sh...")
-                script_path = os.path.join(BASE_DIR, 'sync_images.sh')
-                if os.path.exists(script_path):
-                    res = subprocess.run([script_path], capture_output=True, text=True, check=True)
-                    res_stdout = res.stdout
-                    log_message("[Sync] Fallback pull sync completed successfully.")
-                else:
-                    log_message("[Sync] Fallback pull sync failed: sync_images.sh not found.")
-                    raise Exception("Pi trigger sync failed: {0}. Local pull script sync_images.sh not found.".format(pi_sync_error))
-            else:
-                res_stdout = "Pi backlog push sync triggered successfully."
-                # Sleep 1.5 seconds to let first files start transferring before indexing
-                time.sleep(1.5)
-        else:
-            res_stdout = "RTSP streaming active; local file sync skipped."
+        pi_sync_url = 'http://{0}:8080/sync'.format(PI_IP)
+        log_message("[Sync] Triggering Pi to push backlog files: {0}".format(pi_sync_url))
+        import urllib.request
+        req = urllib.request.Request(pi_sync_url, headers=authenticated_device_headers(), method='POST')
+        with urllib.request.urlopen(req, timeout=5) as response:
+            response.read()
+        log_message("[Sync] Pi backlog push triggered successfully.")
+        res_stdout = "Pi backlog push sync triggered successfully."
+        time.sleep(1.5)
 
         process_synced_videos()
 
         if use_gemini:
-            python_executable = os.path.join(BASE_DIR, '.venv', 'bin', 'python3')
-            labeler_script = os.path.join(BASE_DIR, 'auto_label.py')
             settings = load_settings()
             env = os.environ.copy()
             if settings.get('gemini_api_key'):
                 env['GEMINI_API_KEY'] = settings['gemini_api_key']
-            subprocess.run([python_executable, labeler_script], env=env, check=True)
+            subprocess.run([sys.executable, '-m', 'tools.auto_label'], env=env, check=True, cwd=BASE_DIR)
 
         sync_db_with_filesystem()
 
@@ -7573,8 +7530,6 @@ def api_health():
             'spray_decision_required_hits': settings.get('spray_decision_required_hits'),
             'spray_decision_window_seconds': settings.get('spray_decision_window_seconds'),
             'spray_decision_average_confidence': settings.get('spray_decision_average_confidence'),
-            'spray_controller_type': settings.get('spray_controller_type'),
-            'spray_controller_url': settings.get('spray_controller_url'),
             'active_model': settings.get('active_model'),
             'day_model': settings.get('day_model'),
             'night_model': settings.get('night_model')
@@ -7693,18 +7648,17 @@ def start_training():
     except Exception as e:
         log_message("Error clearing train.log: {0}".format(e))
 
-    # Start train.py as a subprocess using the same python interpreter
-    import sys
-    train_script = os.path.join(BASE_DIR, 'train.py')
+    # Start the training module as a subprocess using the same Python interpreter.
     try:
         last_exit_code = None
         model_reloaded = False
         last_trained_model_filename = None
         last_trained_model_prompted = False
         training_process = subprocess.Popen(
-            [sys.executable, '-u', train_script, '--period', period],
+            [sys.executable, '-u', '-m', 'tools.train', '--period', period],
             stdout=open(log_path, 'a'),
-            stderr=subprocess.STDOUT
+            stderr=subprocess.STDOUT,
+            cwd=BASE_DIR,
         )
         log_message("[Training] Started background training subprocess (PID: {0})".format(training_process.pid))
         return jsonify({
@@ -8215,44 +8169,8 @@ def trigger_spray_on_pi(duration):
         log_message("[Spray Trigger] Error triggering solenoid on Pi: {}".format(e))
     return False
 
-def trigger_spray_on_esphome(duration):
-    import urllib.request
-    import urllib.parse
-
-    settings = load_settings()
-    duration = bounded_duration(duration, default=3.0, maximum=MAX_SPRAY_DURATION_SECONDS)
-    base_url = str(settings.get('spray_controller_url') or '').strip().rstrip('/')
-    if not base_url:
-        log_message("[Spray Trigger] ESPHome controller URL is not configured.")
-        return False
-
-    try:
-        duration = max(0.1, min(float(duration), 10.0))
-    except Exception:
-        duration = 3.0
-
-    try:
-        encoded_duration = urllib.parse.urlencode({'value': duration})
-        number_url = "{0}/number/spray_duration/set?{1}".format(base_url, encoded_duration)
-        button_url = "{0}/button/spray/press".format(base_url)
-        req = urllib.request.Request(number_url, method='POST')
-        with urllib.request.urlopen(req, timeout=5) as response:
-            response.read()
-        req = urllib.request.Request(button_url, method='POST')
-        with urllib.request.urlopen(req, timeout=5) as response:
-            response.read()
-        log_message("[Spray Trigger] Sent {0:.1f}s spray request to ESPHome controller.".format(duration))
-        return True
-    except Exception as e:
-        log_message("[Spray Trigger] Error triggering ESPHome controller: {0}".format(e))
-    return False
-
 def trigger_spray_controller(duration):
-    settings = load_settings()
-    controller_type = str(settings.get('spray_controller_type') or 'pi').strip().lower()
-    if controller_type == 'pi':
-        return trigger_spray_on_pi(duration)
-    return trigger_spray_on_esphome(duration)
+    return trigger_spray_on_pi(duration)
 
 def finalize_video_recording(filepath):
     try:

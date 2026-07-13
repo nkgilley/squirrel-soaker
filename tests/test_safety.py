@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from squirrel_safety import DetectionGate, SprayBudget, bounded_duration, device_auth_headers, device_token_matches
+from squirrel_soaker.safety import DetectionGate, SprayBudget, bounded_duration, device_auth_headers, device_token_matches
 
 
 def test_duration_is_finite_and_bounded():

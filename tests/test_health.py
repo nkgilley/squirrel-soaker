@@ -1,6 +1,6 @@
 """Verify bounded, thread-safe health-history storage."""
 
-from squirrel_health import HealthStore
+from squirrel_soaker.health import HealthStore
 
 
 def test_health_store_is_bounded_and_filters_by_time():

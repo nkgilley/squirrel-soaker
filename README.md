@@ -1,6 +1,6 @@
 # Squirrel Soaker 9001
 
-![Squirrel Soaker 9001](Gemini_Generated_Image_29b0xu29b0xu29b0.png)
+![Squirrel Soaker 9001](docs/assets/header.png)
 
 The **Squirrel Soaker 9001** is an automated, AI-powered garden protection system that detects squirrels at a birdfeeder and gently repels them with a short blast from a water solenoid valve.
 
@@ -10,7 +10,7 @@ The current `main` branch uses a Raspberry Pi 5 with Camera Module 3 for images 
 2. **Mac server or Docker host** running the Flask web app and PyTorch classifier. It receives Pi frames, runs inference, saves review frames, exposes the dashboard, and stores the training dataset.
 3. **Optional IP-camera snapshot feed** remains available through Settings for camera-only experiments.
 
-The current capture path uses Pi still images because they are cleaner for classification than RTSP video frames. The old Pi 3, RTSP, Wyze Bridge, and ESP32 paths are retained only as historical or optional compatibility code.
+The current capture path uses Pi still images because they are cleaner for classification than RTSP video frames. Retired Pi 3 streaming, rsync, Wyze Bridge, and ESP32 deployment files have been removed from the active codebase.
 
 ---
 
@@ -73,6 +73,15 @@ Normal camera operation keeps media on the Mac/server:
 - Unsaved analysis frames are kept in memory only and dropped after inference.
 - Review frames are saved on the Mac, not the Pi.
 - Spray/detection history is stored as durable blast events; videos are media attachments, so deleting video files does not remove false-positive or accuracy history.
+
+### Repository Layout
+
+- `classify_images.py`: Flask application entry point and current web UI.
+- `squirrel_soaker/`: shared settings, safety, health, Kasa, and training helpers.
+- `pi/`: Raspberry Pi agents, deployment script, systemd templates, and hardware tools.
+- `tools/`: server-side model training and optional Gemini labeling utilities.
+- `tests/`: dependency-light unit tests used by CI.
+- `docs/`: architecture, wiring, safety, troubleshooting, model, and project-story documentation.
 
 ### Day and NoIR Night Cameras
 
@@ -166,14 +175,14 @@ For camera-specific training, use the same class folders under:
 Then run:
 
 ```bash
-python train.py
+python -m tools.train
 ```
 
 Train the two camera periods independently with:
 
 ```bash
-python train.py --period day
-python train.py --period night
+python -m tools.train --period day
+python -m tools.train --period night
 ```
 
 The Training view exposes the same period selector. After training, choose
@@ -200,45 +209,7 @@ The included `docker-compose.yml` maps:
 - `./data:/app/data` for persistent images, videos, labels, settings, SQLite data, and locally trained checkpoints under `data/models/`.
 - `PI_IP=<pi-address>` so manual web sprays can call the Pi 5 trigger server.
 - `CAMERA_SOURCE=pi` so the Mac app waits for Pi uploads instead of polling an IP-camera snapshot bridge.
-- `SPRAY_CONTROLLER_TYPE=pi` so manual web sprays use the Pi 5, not the ESP32.
 - `PUBLIC_BASE_URL=http://<server-address>:5001` so notification links use the reachable server address instead of Docker's internal bridge IP.
-
----
-
-## Legacy ESP32 Solenoid Controller
-
-The previous ESP-WROOM-32 ESPHome controller is preserved in
-`esphome/squirrel-soaker-controller.yaml`, but it is not used by the current
-Pi 5 deployment. New installations should use the Pi GPIO controller below.
-
-Default wiring:
-
-- Relay control: GPIO26.
-- Manual spray button: GPIO27, normally open to ground, using the ESP32 internal pull-up.
-- The ESP32 GPIO should drive a relay module or transistor/MOSFET driver, not the solenoid directly. A bare coil needs proper flyback protection.
-
-Create the private ESPHome secrets file before flashing:
-
-```bash
-cp esphome/secrets.example.yaml esphome/secrets.yaml
-```
-
-Then edit `esphome/secrets.yaml` with the Wi-Fi network name, Wi-Fi password, and fallback setup AP password. This file is ignored by git.
-
-Flash over USB:
-
-```bash
-esphome run esphome/squirrel-soaker-controller.yaml --device /dev/cu.usbserial-0001
-```
-
-If you switch Settings back to ESPHome, the app triggers sprays through the ESPHome local web API:
-
-```text
-POST http://<esp32-address>/number/spray_duration/set?value=3.0
-POST http://<esp32-address>/button/spray/press
-```
-
-The same controller can also be managed from the ESPHome native API if you later add Home Assistant or another ESPHome client.
 
 ---
 
@@ -246,12 +217,11 @@ The same controller can also be managed from the ESPHome native API if you later
 
 The Pi-side scripts and services are:
 
-- `capture.py`: still capture, motion prefilter, inference upload, Pi status reporting.
-- `trigger_server.py`: local solenoid HTTP endpoint, spray video recording, backlog sync.
-- `pi_benchmark.py`: Pi-side camera/preprocessing benchmark used by the Diagnostics view.
-- `squirrel-capture.service`: runs the capture loop.
-- `squirrel-trigger.service`: runs the local trigger server.
-- `deploy_pi.sh`: copies Pi scripts/services and restarts the services.
+- `pi/capture.py`: still capture, motion prefilter, inference upload, and Pi status reporting.
+- `pi/trigger_server.py`: local solenoid HTTP endpoint, spray video recording, and backlog sync.
+- `pi/pi_benchmark.py`: camera/preprocessing benchmark used by Diagnostics.
+- `pi/systemd/`: capture and trigger service templates.
+- `pi/deploy.sh`: copies Pi agents and shared modules, renders services, and restarts them.
 
 On a freshly flashed Raspberry Pi OS install, install the small Python dependency used for motion scoring. Current Raspberry Pi OS on Pi 5 should already include `rpicam-apps`, `gpiozero`, and `lgpio`; install them if missing:
 
@@ -281,7 +251,7 @@ The Pi scripts need the Mac/Docker host IP:
 MAC_IP=<server-address>
 ```
 
-Set that value in `.env`; `deploy_pi.sh` writes it to the private Pi
+Set that value in `.env`; `pi/deploy.sh` writes it to the private Pi
 `device.env` file alongside the device token.
 
 ### Deploy to the Pi
@@ -289,18 +259,17 @@ Set that value in `.env`; `deploy_pi.sh` writes it to the private Pi
 From the Mac workspace:
 
 ```bash
-./deploy_pi.sh
+./pi/deploy.sh
 ```
 
 The deploy script copies the Pi files to the `pi5` SSH host at
 `/home/<user>/squirrel_soaker` by default, installs the systemd services,
-enables capture and trigger services, disables the old stream service, and
-restarts everything.
+enables the capture and trigger services, and restarts them.
 
 Override the target if needed:
 
 ```bash
-PI_HOST=<ssh-host> PI_APP_DIR=/home/<user>/squirrel_soaker ./deploy_pi.sh
+PI_HOST=<ssh-host> PI_APP_DIR=/home/<user>/squirrel_soaker ./pi/deploy.sh
 ```
 
 ## Project Documentation
@@ -309,6 +278,7 @@ PI_HOST=<ssh-host> PI_APP_DIR=/home/<user>/squirrel_soaker ./deploy_pi.sh
 - `docs/WIRING.md` and `docs/SAFETY.md`: hardware bring-up and spray safety.
 - `docs/TROUBLESHOOTING.md`: common server, Pi, camera, and video failures.
 - `docs/MODEL_CARD.md` and `docs/RELEASING.md`: model provenance and release policy.
+- `docs/BLOG_POST.md`: the project's development story.
 - `CONTRIBUTING.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md`: community standards.
 
 ### Monitor Pi Logs
@@ -333,7 +303,7 @@ Manual hardware spray button:
 - Default button pin is BCM GPIO 27, which is physical header pin 13, using the Pi's internal pull-up resistor.
 - Wire one side of a normally open momentary button to physical pin 13 / BCM GPIO 27 and the other side to a Pi ground pin.
 - Pressing the button should pull GPIO 27 from high to low and triggers the same local spray/video path as the web UI.
-- Set `BUTTON_PIN=<BCM pin>` in `squirrel-trigger.service` if you need a different pin. Set `BUTTON_ACTIVE_LOW=false` for active-high button modules.
+- Set `BUTTON_PIN=<BCM pin>` in `pi/systemd/squirrel-trigger.service` if you need a different pin. Set `BUTTON_ACTIVE_LOW=false` for active-high button modules.
 
 ---
 
@@ -364,7 +334,6 @@ Important settings:
 - **Confidence Threshold**: minimum squirrel confidence required before spraying.
 - **Spray Decision Gate**: separates detection from spraying by requiring repeated qualifying detections inside a configurable time window.
 - **Spray Mode**: automation can spray immediately after the decision gate passes, or ask for confirmation first. Confirmation mode sends a notification link to the dashboard with the live image plus spray/dismiss buttons.
-- **Spray Controller**: use `Raspberry Pi` for the current deployment. ESPHome is legacy compatibility code only.
 - **Motion Prefilter**: skips inference when frame-to-frame motion is below the threshold, with a force-analysis interval to avoid going silent forever.
 
 Camera calibration lives in the Settings view. Select **Day camera** or **NoIR
@@ -391,7 +360,7 @@ Main views:
 - **Training**: retrain the model, save a timestamped checkpoint, and choose whether to activate it.
 - **Settings**: configure camera cadence, image quality, ROI calibration, thresholds, motion prefilter, and automation behavior.
 
-When a spray video is marked as a false positive, the app extracts several frames into `data/dataset/not_squirrel` as hard-negative examples. Starting training also backfills hard negatives from all currently marked false-positive videos before launching `train.py`.
+When a spray video is marked as a false positive, the app extracts several frames into `data/dataset/not_squirrel` as hard-negative examples. Starting training also backfills hard negatives from all currently marked false-positive videos before launching `tools.train`.
 
 Successful UI training writes `model.pth` and also copies it to `data/models/resnet18_YYYYMMDD_HHMMSS.pth`. The Train page prompts before switching `active_model` to the newly trained checkpoint.
 

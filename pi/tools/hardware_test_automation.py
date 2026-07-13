@@ -6,9 +6,9 @@ import os
 import sys
 import shutil
 
-# Add current directory to path to import capture
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-import capture
+# Add the repository root to import the Pi capture package.
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pi import capture
 
 def run_test():
     print("Starting simulated squirrel detection test...")

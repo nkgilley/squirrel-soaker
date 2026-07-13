@@ -1,0 +1,13 @@
+# Keep local state, development artifacts, and Pi-only files out of server images.
+.git
+.github
+.env
+.venv
+data
+docs
+pi
+tests
+__pycache__
+*.pyc
+*.pth
+*.pt

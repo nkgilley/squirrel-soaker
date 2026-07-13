@@ -1,6 +1,6 @@
 # Building the Squirrel Soaker 9001: An AI-Powered, Water-Blasting Feeder Sentry
 
-![Squirrel Soaker 9001](Gemini_Generated_Image_29b0xu29b0xu29b0.png)
+![Squirrel Soaker 9001](assets/header.png)
 
 Have you ever filled a bird feeder with premium seed, only to watch a horde of squirrels perform acrobatics, consume the entire supply in minutes, and scare away the local birds? 
 
@@ -84,15 +84,14 @@ flowchart TB
 ## The Four Phases of Development
 
 ### Phase 1: Edge Capture & Data Sync
-Before building an AI model, I needed data. I wrote a background daemon on the Raspberry Pi (`capture.py`) that captures still frames during daylight hours. 
-A local shell script (`sync_images.sh`) runs in the background on the Mac, using `rsync` over SSH to pull the raw captured images from the Pi into a local `data/raw/` directory.
+Before building an AI model, I needed data. I wrote the first version of the Raspberry Pi capture daemon, now located at `pi/capture.py`, to collect still frames. The original build pulled those files with rsync; the current Pi 5 agent posts in-memory frames directly and keeps only a bounded failure backlog.
 
 To sort this initial raw data into training folders (`squirrel` vs. `not_squirrel`), I built a custom **Flask Web Application** with an image review queue. I integrated keyboard shortcuts and a history-based **Undo Stack** so I could fly through hundreds of raw pictures and manually label them with high speed.
 
 ### Phase 2: Deep Learning with PyTorch
 Once I collected about a thousand images, it was time to train the brain. 
 
-I wrote `train.py` using **PyTorch** to fine-tune a pre-trained **ResNet-18** convolutional neural network. The web UI now saves every successful training run as a timestamped checkpoint, then asks whether to make that new checkpoint the active model.
+I wrote `tools/train.py` using **PyTorch** to fine-tune a pre-trained **ResNet-18** convolutional neural network. The web UI now saves every successful training run as a timestamped checkpoint, then asks whether to make that new checkpoint the active model.
 
 #### Addressing the Class Imbalance
 My dataset had a classic class imbalance: **34 squirrel images** vs. **980 not-squirrel (birds/empty) images**. To prevent the model from simply guessing "not-squirrel" every time, I:
@@ -106,7 +105,7 @@ I integrated this model into the Mac Flask server at `/api/predict`. When the Pi
 ### Phase 3: Containerization & Daemons
 To make the system robust:
 1. **Dockerized the Flask Server**: Created a lightweight `Dockerfile` using CPU-only PyTorch wheel downloads to keep the image footprint around 600MB. Configured a `docker-compose.yml` for easy hosting in Docker and Unraid.
-2. **systemd Services on the Pi**: Created permanent system daemons (`squirrel-trigger.service` and `squirrel-capture.service`) with auto-restart properties to ensure the sentry loops reboot instantly if the Pi loses power or network connection.
+2. **systemd Services on the Pi**: Created permanent service templates under `pi/systemd/` with automatic restart behavior so the sentry recovers after power or network interruptions.
 
 ---
 

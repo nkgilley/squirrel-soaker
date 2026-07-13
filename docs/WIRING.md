@@ -4,7 +4,7 @@
 
 Use a Raspberry Pi Camera Module 3 on the CSI connector with the cable fully
 inserted and the contacts facing the connector contacts. The manual button is
-read as a dry contact using the GPIO configuration in `capture.py`; confirm
+read as a dry contact using the GPIO configuration in `pi/capture.py`; confirm
 the configured pull-up/pull-down matches whether the switch is normally open.
 
 ## Solenoid

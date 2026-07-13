@@ -24,7 +24,9 @@ COPY requirements.txt /app/
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application files. Trained checkpoints live in the mounted data volume.
-COPY classify_images.py auto_label.py train.py squirrel_safety.py squirrel_health.py squirrel_settings.py squirrel_kasa.py squirrel_training.py /app/
+COPY classify_images.py /app/
+COPY squirrel_soaker /app/squirrel_soaker
+COPY tools /app/tools
 
 # Expose the Flask server port
 EXPOSE 5001

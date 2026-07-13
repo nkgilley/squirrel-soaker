@@ -13,7 +13,7 @@ import math
 import fcntl
 import platform
 
-from squirrel_safety import device_auth_headers
+from squirrel_soaker.safety import device_auth_headers
 
 ANALYSIS_INTERVAL_SECONDS = 5
 SAVE_INTERVAL_SECONDS = 30

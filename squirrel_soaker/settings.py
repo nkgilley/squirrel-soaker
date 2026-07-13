@@ -47,7 +47,6 @@ CHOICES = {
     'camera_focus_mode': {'', 'manual', 'auto', 'continuous'},
     'spray_mode': {'auto', 'confirm'},
     'notification_type': {'none', 'join', 'email', 'both'},
-    'spray_controller_type': {'pi', 'esphome'},
     'camera_source': {'pi', 'snapshot', 'rtsp'},
 }
 
