@@ -1,4 +1,4 @@
-from train import classification_metrics, grouped_split_indices, sample_group
+from squirrel_training import classification_metrics, grouped_split_indices, sample_group
 
 
 def test_capture_groups_bucket_burst_frames_together():
