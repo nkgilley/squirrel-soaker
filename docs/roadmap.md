@@ -114,6 +114,12 @@ on during the configured night period and off during the day period.
 
 ## Phase 6: Open-Source Release
 
+Initial release-readiness pass completed: the repository now includes a
+license, contributor and security policies, architecture/wiring/safety
+guidance, issue and pull-request templates, a changelog, model card, release
+checklist, and sanitized deployment defaults. Model checksum and public-release
+guidance are in `docs/RELEASING.md`.
+
 - Choose a project license and audit model and dependency licensing.
 - Add contributing, security, code-of-conduct, changelog, architecture, wiring,
   safety, troubleshooting, and release documentation.
