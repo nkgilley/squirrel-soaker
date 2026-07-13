@@ -5361,6 +5361,11 @@ HTML_TEMPLATE = """
                                 <button id="favorites-filter-btn" class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: ${showFavoritesOnly ? '#f59e0b' : 'transparent'}; border: 1px solid ${showFavoritesOnly ? '#f59e0b' : 'var(--border-color)'}; color: ${showFavoritesOnly ? '#020617' : 'var(--text-secondary)'}; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onclick="toggleFavoritesFilter()">
                                     ⭐ ${showFavoritesOnly ? 'Favorites Only' : 'All Videos'}
                                 </button>
+                                ${Object.keys(videoFavorites).length > 0 ? `
+                                <button id="favorites-compilation-btn" class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: #f59e0b; border: 1px solid #f59e0b; color: #020617; font-weight: 600; border-radius: 8px; cursor: pointer;" onclick="startFavoritesCompilation()">
+                                    Play All Favorites
+                                </button>
+                                ` : ''}
                                 ${falseAlarmVideoCount > 0 ? `
                                 <button class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; background-color: transparent; border: 1px solid var(--color-delete); color: var(--color-delete); font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s ease;" onclick="deleteAllFalseAlarmVideos()">
                                     Delete False Alarms (${falseAlarmVideoCount})
@@ -5896,7 +5901,31 @@ HTML_TEMPLATE = """
             }
         }
 
-        function playCompilationVideo(filename, selectedDate) {
+        async function startFavoritesCompilation() {
+            const btn = document.getElementById('favorites-compilation-btn');
+            if (!btn) return;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = 'Building Favorites...';
+
+            try {
+                const res = await fetch('/api/compilation/favorites');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    playCompilationVideo(data.filename, null, `All-Time Favorites (${data.video_count})`);
+                } else {
+                    alert('Failed to build favorites compilation: ' + data.message);
+                }
+            } catch (e) {
+                console.error('Error creating favorites compilation:', e);
+                alert('Error connecting to server to build the favorites compilation.');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        }
+
+        function playCompilationVideo(filename, selectedDate, title = null) {
             const player = document.getElementById('modal-video-element');
             player.src = `/video/${filename}?t=${Date.now()}`;
             player.loop = false; // Compilations don't loop by default
@@ -5907,7 +5936,7 @@ HTML_TEMPLATE = """
             // Update HUD text
             const compHeader = document.getElementById('compilation-header');
             if (compHeader) {
-                document.getElementById('compilation-header-info').innerText = `Daily Stitched Video - ${formatDateString(selectedDate)}`;
+                document.getElementById('compilation-header-info').innerText = title || `Daily Stitched Video - ${formatDateString(selectedDate)}`;
                 compHeader.style.display = 'flex';
             }
 
@@ -6367,27 +6396,31 @@ def find_retro_font():
 @app.route('/api/compilation/<date_str>')
 def get_daily_compilation(date_str):
     import re
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+    favorites_mode = date_str == 'favorites'
+    if not favorites_mode and not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
         return jsonify({'status': 'error', 'message': 'Invalid date format (expected YYYY-MM-DD)'}), 400
 
-    date_clean = date_str.replace('-', '') # YYYYMMDD
-
-    # Query videos for this day whose linked spray event is not marked false positive.
     try:
-        videos = db_session.query(DBVideo).filter(
-            DBVideo.filename.like('vid_{0}_%.mp4'.format(date_clean))
-        ).all()
-        videos = [v for v in videos if get_video_event_classification(v) != 'false_positive']
+        if favorites_mode:
+            videos = db_session.query(DBVideo).filter(DBVideo.is_favorite.is_(True)).all()
+            videos = [v for v in videos if not v.filename.startswith('compilation_')]
+        else:
+            date_clean = date_str.replace('-', '')
+            videos = db_session.query(DBVideo).filter(
+                DBVideo.filename.like('vid_{0}_%.mp4'.format(date_clean))
+            ).all()
+            videos = [v for v in videos if get_video_event_classification(v) != 'false_positive']
     except Exception as e:
         return jsonify({'status': 'error', 'message': 'Database query error: ' + str(e)}), 500
 
     if not videos:
-        return jsonify({'status': 'error', 'message': 'No videos found for this date.'}), 404
+        message = 'No favorite videos found.' if favorites_mode else 'No videos found for this date.'
+        return jsonify({'status': 'error', 'message': message}), 404
 
-    # Sort chronologically (ascending)
-    videos.sort(key=lambda v: v.filename)
+    # Sort chronologically so an all-time compilation plays in event order.
+    videos.sort(key=lambda v: (v.created_at or datetime.datetime.min, v.filename))
 
-    output_filename = 'compilation_{0}.mp4'.format(date_clean)
+    output_filename = 'compilation_favorites.mp4' if favorites_mode else 'compilation_{0}.mp4'.format(date_clean)
     output_path = os.path.join(VIDEOS_DIR, output_filename)
 
     input_paths = [os.path.join(VIDEOS_DIR, v.filename) for v in videos if os.path.exists(os.path.join(VIDEOS_DIR, v.filename))]
@@ -6395,7 +6428,7 @@ def get_daily_compilation(date_str):
         return jsonify({'status': 'error', 'message': 'No physical video files found on disk.'}), 404
 
     needs_rebuild = True
-    if os.path.exists(output_path):
+    if not favorites_mode and os.path.exists(output_path):
         out_mtime = os.path.getmtime(output_path)
         # Rebuild if any source file is newer than output
         if all(os.path.getmtime(ip) < out_mtime for ip in input_paths):
@@ -6527,7 +6560,8 @@ def get_daily_compilation(date_str):
     return jsonify({
         'status': 'success',
         'url': '/video/{0}'.format(output_filename),
-        'filename': output_filename
+        'filename': output_filename,
+        'video_count': len(input_paths)
     })
 
 @app.route('/api/delete_video', methods=['POST'])

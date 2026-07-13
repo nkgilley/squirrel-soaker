@@ -356,7 +356,7 @@ Main views:
 - **Dashboard**: live snapshot, spray activity, queue stats, model accuracy, current health stats, and health graph over time.
 - **Classify Queue**: sort raw captures into squirrel, not-squirrel, or trash.
 - **Dataset Review**: inspect and correct labeled training images.
-- **Videos**: review spray event recordings.
+- **Videos**: review spray recordings, mark favorites, and play daily or all-time favorites compilations.
 - **Training**: retrain the model, save a timestamped checkpoint, and choose whether to activate it.
 - **Settings**: configure camera cadence, image quality, ROI calibration, thresholds, motion prefilter, and automation behavior.
 
