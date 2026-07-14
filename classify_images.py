@@ -20,6 +20,7 @@ from PIL import ImageFile
 
 from squirrel_soaker.safety import DetectionGate, bounded_duration, device_auth_headers, device_token_matches
 from squirrel_soaker.health import HealthStore
+from squirrel_soaker.events import counts_as_blasted_squirrel
 from squirrel_soaker.settings import public_device_settings, validate_settings_patch
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -1825,6 +1826,9 @@ HTML_TEMPLATE = """
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐿️</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        document.documentElement.dataset.theme = localStorage.getItem('squirrel-soaker-theme') || 'dark';
+    </script>
     <style>
         :root {
             --bg-color: #0b0f19;
@@ -1832,6 +1836,16 @@ HTML_TEMPLATE = """
             --border-color: rgba(255, 255, 255, 0.08);
             --text-primary: #f8fafc;
             --text-secondary: #94a3b8;
+            --header-bg: rgba(11, 15, 25, 0.88);
+            --mobile-nav-bg: rgba(15, 23, 42, 0.92);
+            --surface-subtle: rgba(255, 255, 255, 0.05);
+            --surface-raised: rgba(15, 23, 42, 0.45);
+            --surface-overlay: rgba(15, 23, 42, 0.75);
+            --input-bg: #0f172a;
+            --media-bg: #020617;
+            --modal-bg: rgba(2, 6, 23, 0.9);
+            --settings-fade: rgba(11, 18, 32, 0.96);
+            --image-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 
             --color-squirrel: #10b981;
             --color-not-squirrel: #ef4444;
@@ -1840,6 +1854,26 @@ HTML_TEMPLATE = """
             --color-accuracy: #a855f7;
 
             --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.15);
+        }
+
+        html[data-theme="light"] {
+            color-scheme: light;
+            --bg-color: #f4f7fb;
+            --card-bg: rgba(255, 255, 255, 0.92);
+            --border-color: rgba(15, 23, 42, 0.14);
+            --text-primary: #172033;
+            --text-secondary: #5d6b82;
+            --header-bg: rgba(255, 255, 255, 0.92);
+            --mobile-nav-bg: rgba(255, 255, 255, 0.96);
+            --surface-subtle: rgba(15, 23, 42, 0.06);
+            --surface-raised: rgba(226, 232, 240, 0.72);
+            --surface-overlay: rgba(15, 23, 42, 0.72);
+            --input-bg: #ffffff;
+            --media-bg: #111827;
+            --modal-bg: rgba(241, 245, 249, 0.96);
+            --settings-fade: rgba(244, 247, 251, 0.96);
+            --image-shadow: 0 10px 30px rgba(15, 23, 42, 0.16);
+            --shadow-glow: 0 0 20px rgba(37, 99, 235, 0.12);
         }
 
         * {
@@ -1868,6 +1902,10 @@ HTML_TEMPLATE = """
                 radial-gradient(at 50% 50%, rgba(59, 130, 246, 0.03) 0px, transparent 80%);
         }
 
+        html[data-theme="light"] body {
+            background-image: none;
+        }
+
         header {
             display: flex;
             justify-content: space-between;
@@ -1875,7 +1913,7 @@ HTML_TEMPLATE = """
             padding: 1.5rem 2rem;
             border-bottom: 1px solid var(--border-color);
             backdrop-filter: blur(12px);
-            background: rgba(11, 15, 25, 0.5);
+            background: var(--header-bg);
             position: sticky;
             top: 0;
             z-index: 10;
@@ -1910,6 +1948,18 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 1rem;
+        }
+
+        .theme-toggle {
+            width: 42px;
+            height: 42px;
+            padding: 0;
+            justify-content: center;
+            flex: 0 0 42px;
+            background: var(--surface-subtle);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-size: 1.1rem;
         }
 
         .btn {
@@ -2008,7 +2058,7 @@ HTML_TEMPLATE = """
             font-weight: 600;
         }
 
-        .stat-val.raw { color: #f8fafc; }
+        .stat-val.raw { color: var(--text-primary); }
         .stat-val.squirrel { color: var(--color-squirrel); }
         .stat-val.not-squirrel { color: var(--color-not-squirrel); }
 
@@ -2062,13 +2112,13 @@ HTML_TEMPLATE = """
             height: 480px;
             border-radius: 12px;
             overflow: hidden;
-            background: #020617;
+            background: var(--media-bg);
             display: flex;
             align-items: center;
             justify-content: center;
             border: 1px solid var(--border-color);
             position: relative;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            box-shadow: var(--image-shadow);
         }
 
         .image-container img {
@@ -2613,7 +2663,7 @@ HTML_TEMPLATE = """
                 display: flex;
                 overflow-x: auto;
                 white-space: nowrap;
-                background: rgba(15, 23, 42, 0.85);
+                background: var(--mobile-nav-bg);
                 border-bottom: 1px solid var(--border-color);
                 padding: 0.6rem 1rem;
                 gap: 0.5rem;
@@ -2631,7 +2681,7 @@ HTML_TEMPLATE = """
                 scrollbar-width: none;
             }
             .nav-tab {
-                background: rgba(255, 255, 255, 0.05);
+                background: var(--surface-subtle);
                 border: 1px solid var(--border-color);
                 color: var(--text-secondary);
                 padding: 0.4rem 0.9rem;
@@ -2860,7 +2910,7 @@ HTML_TEMPLATE = """
         }
 
         .settings-field select {
-            background: #0f172a;
+            background: var(--input-bg);
             cursor: pointer;
         }
 
@@ -2896,7 +2946,7 @@ HTML_TEMPLATE = """
             display: flex;
             justify-content: flex-end;
             padding-top: 0.75rem;
-            background: linear-gradient(to top, rgba(11, 18, 32, 0.96), rgba(11, 18, 32, 0));
+            background: linear-gradient(to top, var(--settings-fade), transparent);
             z-index: 2;
         }
 
@@ -2920,6 +2970,9 @@ HTML_TEMPLATE = """
             <p>Dataset Image Classifier</p>
         </a>
         <div class="header-actions">
+            <button id="theme-toggle" class="btn theme-toggle" type="button" onclick="toggleTheme()" aria-label="Switch to light mode" title="Switch to light mode">
+                <span id="theme-toggle-icon" aria-hidden="true">☀</span>
+            </button>
             <button id="automation-btn" class="btn" onclick="toggleAutomation()" style="background-color: var(--color-squirrel); color: white; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3); border: none;">
                 <span id="automation-text">Automation: Active 🟢</span>
             </button>
@@ -3132,6 +3185,25 @@ HTML_TEMPLATE = """
         let showFavoritesOnly = false;
         let videoCurrentPage = 1;
         let loadedSettings = {};
+
+        function updateThemeToggle() {
+            const isLight = document.documentElement.dataset.theme === 'light';
+            const button = document.getElementById('theme-toggle');
+            const icon = document.getElementById('theme-toggle-icon');
+            const label = isLight ? 'Switch to dark mode' : 'Switch to light mode';
+            if (button) {
+                button.setAttribute('aria-label', label);
+                button.setAttribute('title', label);
+            }
+            if (icon) icon.textContent = isLight ? '☾' : '☀';
+        }
+
+        function toggleTheme() {
+            const nextTheme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+            document.documentElement.dataset.theme = nextTheme;
+            localStorage.setItem('squirrel-soaker-theme', nextTheme);
+            updateThemeToggle();
+        }
 
         // Compilation Playlist Variables
         let allLoadedVideos = [];
@@ -3819,10 +3891,7 @@ HTML_TEMPLATE = """
 
                     const overlay = document.getElementById('dash-feed-overlay');
                     if (overlay) {
-                        if (cameraSource === 'pi' && (hour < 6 || hour >= 20)) {
-                            overlay.innerHTML = `<span class="dot" style="background-color: var(--color-delete); box-shadow: 0 0 8px var(--color-delete); animation: none;"></span><span>SLEEPING (Night)</span>`;
-                            overlay.title = "Pi camera capture is currently sleeping overnight.";
-                        } else if (mtime > 0 && ageSeconds > 300) {
+                        if (mtime > 0 && ageSeconds > 300) {
                             overlay.innerHTML = `<span class="dot" style="background-color: var(--color-not-squirrel); box-shadow: 0 0 8px var(--color-not-squirrel); animation: none;"></span><span>IDLE / OFFLINE</span>`;
                             overlay.title = "No capture received in the last 5 minutes. Camera may be offline or idle.";
                         } else {
@@ -3864,7 +3933,7 @@ HTML_TEMPLATE = """
                     const dateStr = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
                     return b.timestamp && b.timestamp.startsWith(dateStr);
                 });
-                const todayCount = todayBlasts.length;
+                const todayCount = todayBlasts.filter(b => b.classification !== 'false_positive').length;
 
                 if (blastedVal) blastedVal.innerText = `${todayCount} / ${blastsData.total_blasts}`;
                 if (blastedSub) blastedSub.innerText = `Today / All-Time (Auto: ${blastsData.auto_blasts} | Manual: ${blastsData.manual_blasts})`;
@@ -6112,6 +6181,7 @@ HTML_TEMPLATE = """
             viewMode = 'dashboard';
         }
 
+        updateThemeToggle();
         setInterval(autoSync, 15000);
         setInterval(() => {
             if (viewMode === 'dashboard' && !rtspEnabled) {
@@ -6913,6 +6983,7 @@ def get_blasts():
     false_positive_count = 0
     auto_blasts_count = 0
     manual_blasts_count = 0
+    counted_blasts = 0
 
     for b in blasts_query:
         v = videos_by_blast_id.get(b.id)
@@ -6941,10 +7012,12 @@ def get_blasts():
 
         blasts.append(blast_dict)
 
-        if b.type == 'auto':
-            auto_blasts_count += 1
-        elif b.type == 'manual':
-            manual_blasts_count += 1
+        if counts_as_blasted_squirrel(b.classification):
+            counted_blasts += 1
+            if b.type == 'auto':
+                auto_blasts_count += 1
+            elif b.type == 'manual':
+                manual_blasts_count += 1
 
     # Missed squirrels calculation:
     # Any image classified as 'squirrel' that does NOT have an associated blast within 30 seconds.
@@ -6972,7 +7045,8 @@ def get_blasts():
     return jsonify({
         'blasts': blasts,
         'missed_squirrels': missed_squirrels,
-        'total_blasts': len(blasts),
+        'total_blasts': counted_blasts,
+        'total_spray_events': len(blasts),
         'auto_blasts': auto_blasts_count,
         'manual_blasts': manual_blasts_count,
         'classified_accurate': accurate_count,
