@@ -1846,6 +1846,10 @@ HTML_TEMPLATE = """
             --modal-bg: rgba(2, 6, 23, 0.9);
             --settings-fade: rgba(11, 18, 32, 0.96);
             --image-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            --panel-bg: rgba(15, 23, 42, 0.3);
+            --chart-grid: rgba(255, 255, 255, 0.05);
+            --chart-text: #94a3b8;
+            --chart-heading: #f8fafc;
 
             --color-squirrel: #10b981;
             --color-not-squirrel: #ef4444;
@@ -1874,6 +1878,10 @@ HTML_TEMPLATE = """
             --settings-fade: rgba(244, 247, 251, 0.96);
             --image-shadow: 0 10px 30px rgba(15, 23, 42, 0.16);
             --shadow-glow: 0 0 20px rgba(37, 99, 235, 0.12);
+            --panel-bg: rgba(255, 255, 255, 0.82);
+            --chart-grid: rgba(15, 23, 42, 0.1);
+            --chart-text: #5d6b82;
+            --chart-heading: #172033;
         }
 
         * {
@@ -2378,7 +2386,7 @@ HTML_TEMPLATE = """
         }
 
         .page-link {
-            background: rgba(255, 255, 255, 0.05);
+            background: var(--surface-subtle);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             padding: 0.5rem 0.8rem;
@@ -2414,7 +2422,7 @@ HTML_TEMPLATE = """
             margin-bottom: 1.5rem;
         }
         .dash-card {
-            background: rgba(15, 23, 42, 0.45);
+            background: var(--surface-raised);
             border: 1px solid var(--border-color);
             border-radius: 16px;
             padding: 1.25rem;
@@ -2462,7 +2470,7 @@ HTML_TEMPLATE = """
             width: 100%;
         }
         .dash-panel {
-            background: rgba(15, 23, 42, 0.3);
+            background: var(--panel-bg);
             border: 1px solid var(--border-color);
             border-radius: 20px;
             padding: 1.5rem;
@@ -2483,7 +2491,7 @@ HTML_TEMPLATE = """
         .dash-feed-container {
             width: 100%;
             height: 240px;
-            background: #020617;
+            background: var(--media-bg);
             border-radius: 12px;
             overflow: hidden;
             display: flex;
@@ -2550,7 +2558,7 @@ HTML_TEMPLATE = """
             position: relative;
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            background: rgba(15, 23, 42, 0.28);
+            background: var(--surface-subtle);
             padding: 0.7rem;
         }
         .health-mini-title {
@@ -2603,7 +2611,7 @@ HTML_TEMPLATE = """
 
         .modal-content {
             position: relative;
-            background: rgba(15, 23, 42, 0.95);
+            background: var(--modal-bg);
             border: 1px solid var(--border-color);
             border-radius: 20px;
             padding: 2rem;
@@ -2848,7 +2856,7 @@ HTML_TEMPLATE = """
         .settings-panel {
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            background: rgba(15, 23, 42, 0.32);
+            background: var(--surface-subtle);
             padding: 1rem;
             display: flex;
             flex-direction: column;
@@ -2900,11 +2908,11 @@ HTML_TEMPLATE = """
         .settings-field select {
             width: 100%;
             min-width: 0;
-            background: rgba(15, 23, 42, 0.72);
+            background: var(--input-bg);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             padding: 0.68rem 0.75rem;
-            color: white;
+            color: var(--text-primary);
             font-family: Outfit;
             font-size: 0.92rem;
         }
@@ -3203,6 +3211,11 @@ HTML_TEMPLATE = """
             document.documentElement.dataset.theme = nextTheme;
             localStorage.setItem('squirrel-soaker-theme', nextTheme);
             updateThemeToggle();
+            if (viewMode === 'dashboard') updateDashboardData();
+        }
+
+        function themeColor(name) {
+            return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
         }
 
         // Compilation Playlist Variables
@@ -3642,7 +3655,7 @@ HTML_TEMPLATE = """
         }
 
         function metricTile(label, value) {
-            return `<div style="background: rgba(15, 23, 42, 0.45); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.7rem;">
+            return `<div style="background: var(--surface-raised); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.7rem;">
                 <div style="color: var(--text-secondary); font-size: 0.72rem; text-transform: uppercase;">${label}</div>
                 <div style="color: var(--text-primary); font-weight: 600; margin-top: 0.25rem;">${value}</div>
             </div>`;
@@ -3751,29 +3764,32 @@ HTML_TEMPLATE = """
         }
 
         function healthChartOptions(yTitle, y1Title = null) {
+            const chartGrid = themeColor('--chart-grid');
+            const chartText = themeColor('--chart-text');
+            const chartHeading = themeColor('--chart-heading');
             const scales = {
                 x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                    grid: { color: chartGrid },
                     ticks: {
-                        color: '#94a3b8',
+                        color: chartText,
                         maxTicksLimit: 4,
                         font: { family: 'Outfit', size: 10 }
                     }
                 },
                 y: {
                     beginAtZero: true,
-                    title: { display: true, text: yTitle, color: '#94a3b8' },
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                    title: { display: true, text: yTitle, color: chartText },
+                    grid: { color: chartGrid },
+                    ticks: { color: chartText, font: { family: 'Outfit', size: 10 } }
                 }
             };
             if (y1Title) {
                 scales.y1 = {
                     beginAtZero: true,
                     position: 'right',
-                    title: { display: true, text: y1Title, color: '#94a3b8' },
+                    title: { display: true, text: y1Title, color: chartText },
                     grid: { drawOnChartArea: false },
-                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                    ticks: { color: chartText, font: { family: 'Outfit', size: 10 } }
                 };
             }
             return {
@@ -3784,7 +3800,7 @@ HTML_TEMPLATE = """
                 plugins: {
                     legend: {
                         labels: {
-                            color: '#f8fafc',
+                            color: chartHeading,
                             usePointStyle: true,
                             boxWidth: 7,
                             font: { family: 'Outfit', size: 10 }
@@ -3959,6 +3975,9 @@ HTML_TEMPLATE = """
         function renderBlastsChart(blasts, missedSquirrels) {
             const ctx = document.getElementById('blasts-chart');
             if (!ctx) return;
+            const chartGrid = themeColor('--chart-grid');
+            const chartText = themeColor('--chart-text');
+            const chartHeading = themeColor('--chart-heading');
 
             const days = [];
             const accurateCounts = [];
@@ -4060,16 +4079,16 @@ HTML_TEMPLATE = """
                     maintainAspectRatio: false,
                     scales: {
                         x: {
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            grid: { color: chartGrid },
                             ticks: {
-                                color: '#94a3b8',
+                                color: chartText,
                                 font: { family: 'Outfit' }
                             }
                         },
                         y: {
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            grid: { color: chartGrid },
                             ticks: {
-                                color: '#94a3b8',
+                                color: chartText,
                                 precision: 0,
                                 font: { family: 'Outfit' }
                             },
@@ -4079,7 +4098,7 @@ HTML_TEMPLATE = """
                     plugins: {
                         legend: {
                             labels: {
-                                color: '#f8fafc',
+                                color: chartHeading,
                                 font: { family: 'Outfit', weight: 'bold' }
                             }
                         },
