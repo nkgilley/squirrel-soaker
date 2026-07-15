@@ -22,6 +22,7 @@ from squirrel_soaker.safety import DetectionGate, bounded_duration, device_auth_
 from squirrel_soaker.health import HealthStore
 from squirrel_soaker.events import counts_as_blasted_squirrel
 from squirrel_soaker.settings import public_device_settings, validate_settings_patch
+from squirrel_soaker.training import checkpoint_filename
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 app = Flask(__name__)
@@ -1022,6 +1023,7 @@ last_exit_code = None
 model_reloaded = False
 last_trained_model_filename = None
 last_trained_model_prompted = False
+last_training_period = None
 
 def load_automation_status():
     global automation_enabled
@@ -4996,6 +4998,10 @@ HTML_TEMPLATE = """
 
             panel.style.display = 'block';
             nameEl.innerText = latestTrainedModel.filename + (latestTrainedModel.is_active ? ' (active)' : '');
+            const targetSelect = document.getElementById('trained-model-target');
+            if (targetSelect && latestTrainedModel.training_period && latestTrainedModel.training_period !== 'all') {
+                targetSelect.value = latestTrainedModel.training_period;
+            }
             useBtn.disabled = latestTrainedModel.is_active;
             useBtn.style.opacity = latestTrainedModel.is_active ? '0.6' : '1';
             useBtn.innerText = latestTrainedModel.is_active ? 'Active Model' : 'Use This Model';
@@ -6808,16 +6814,16 @@ def get_available_models():
     models.sort()
     return models
 
-def save_timestamped_training_checkpoint():
+def save_timestamped_training_checkpoint(period='all'):
     src_path = os.path.join(BASE_DIR, 'model.pth')
     if not os.path.exists(src_path):
         raise FileNotFoundError('No trained model.pth found after training')
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = 'resnet18_{0}.pth'.format(timestamp)
+    filename = checkpoint_filename(period, timestamp)
     dst_path = os.path.join(MODELS_DIR, filename)
     suffix = 1
     while os.path.exists(dst_path):
-        filename = 'resnet18_{0}_{1}.pth'.format(timestamp, suffix)
+        filename = checkpoint_filename(period, timestamp, suffix)
         dst_path = os.path.join(MODELS_DIR, filename)
         suffix += 1
     shutil.copy2(src_path, dst_path)
@@ -6831,6 +6837,7 @@ def save_timestamped_training_checkpoint():
             'filename': filename,
             'sha256': digest.hexdigest(),
             'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'training_period': period,
         }, metadata_file, indent=2, sort_keys=True)
     log_message("[Training] Saved newly trained model checkpoint as {0}".format(filename))
     return filename
@@ -7751,7 +7758,7 @@ def toggle_automation():
 
 @app.route('/api/train/start', methods=['POST'])
 def start_training():
-    global training_process, last_exit_code, model_reloaded, last_trained_model_filename, last_trained_model_prompted
+    global training_process, last_exit_code, model_reloaded, last_trained_model_filename, last_trained_model_prompted, last_training_period
     # Check if already running
     if training_process is not None and training_process.poll() is None:
         return jsonify({'status': 'error', 'message': 'Training is already in progress.'})
@@ -7781,6 +7788,7 @@ def start_training():
         model_reloaded = False
         last_trained_model_filename = None
         last_trained_model_prompted = False
+        last_training_period = period
         training_process = subprocess.Popen(
             [sys.executable, '-u', '-m', 'tools.train', '--period', period],
             stdout=open(log_path, 'a'),
@@ -7810,7 +7818,7 @@ def train_false_alarms():
 
 @app.route('/api/train/status')
 def train_status():
-    global training_process, last_exit_code, model_reloaded, last_trained_model_filename, last_trained_model_prompted
+    global training_process, last_exit_code, model_reloaded, last_trained_model_filename, last_trained_model_prompted, last_training_period
     running = False
 
     if training_process is not None:
@@ -7829,7 +7837,7 @@ def train_status():
             # until the user confirms in the UI.
             if last_exit_code == 0 and not model_reloaded:
                 try:
-                    last_trained_model_filename = save_timestamped_training_checkpoint()
+                    last_trained_model_filename = save_timestamped_training_checkpoint(last_training_period or 'all')
                     model_reloaded = True
                 except Exception as e:
                     log_message("Error saving timestamped trained model: {0}".format(e))
@@ -7849,6 +7857,7 @@ def train_status():
     if last_trained_model_filename:
         trained_model = {
             'filename': last_trained_model_filename,
+            'training_period': last_training_period or 'all',
             'is_active': settings.get('active_model') == last_trained_model_filename,
             'should_prompt': (last_exit_code == 0 and not last_trained_model_prompted and settings.get('active_model') != last_trained_model_filename)
         }

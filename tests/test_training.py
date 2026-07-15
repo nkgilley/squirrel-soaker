@@ -1,6 +1,12 @@
 """Verify dependency-free training splits, grouping, and evaluation metrics."""
 
-from squirrel_soaker.training import classification_metrics, grouped_split_indices, sample_group
+from squirrel_soaker.training import checkpoint_filename, classification_metrics, grouped_split_indices, sample_group
+
+
+def test_checkpoint_filename_identifies_training_period():
+    assert checkpoint_filename('day', '20260715_143012') == 'resnet18_day_20260715_143012.pth'
+    assert checkpoint_filename('night', '20260715_143012') == 'resnet18_night_20260715_143012.pth'
+    assert checkpoint_filename('all', '20260715_143012', 2) == 'resnet18_shared_20260715_143012_2.pth'
 
 
 def test_capture_groups_bucket_burst_frames_together():

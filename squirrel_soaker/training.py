@@ -5,6 +5,15 @@ import random
 import re
 
 
+def checkpoint_filename(period, timestamp, suffix=None):
+    """Build a checkpoint name that identifies its training dataset period."""
+    label = 'shared' if period == 'all' else period
+    if label not in ('shared', 'day', 'night'):
+        raise ValueError('period must be all, shared, day, or night')
+    suffix_part = '_{0}'.format(suffix) if suffix is not None else ''
+    return 'resnet18_{0}_{1}{2}.pth'.format(label, timestamp, suffix_part)
+
+
 def sample_group(path):
     """Group adjacent captures so burst frames cannot cross the split."""
     stem = os.path.splitext(os.path.basename(path))[0]

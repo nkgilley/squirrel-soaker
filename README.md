@@ -187,6 +187,9 @@ python -m tools.train --period night
 
 The Training view exposes the same period selector. After training, choose
 whether the timestamped checkpoint becomes the day model, night model, or both.
+New checkpoint names identify their dataset, such as
+`resnet18_day_YYYYMMDD_HHMMSS.pth`, `resnet18_night_YYYYMMDD_HHMMSS.pth`,
+or `resnet18_shared_YYYYMMDD_HHMMSS.pth`.
 If a period-specific dataset directory does not exist, training falls back to
 the shared `data/dataset/` directory.
 
@@ -362,7 +365,7 @@ Main views:
 
 When a spray video is marked as a false positive, the app extracts several frames into `data/dataset/not_squirrel` as hard-negative examples. Starting training also backfills hard negatives from all currently marked false-positive videos before launching `tools.train`.
 
-Successful UI training writes `model.pth` and also copies it to `data/models/resnet18_YYYYMMDD_HHMMSS.pth`. The Train page prompts before switching `active_model` to the newly trained checkpoint.
+Successful UI training writes `model.pth` and also copies it to a period-labeled timestamped checkpoint under `data/models/`. The Train page prompts before switching `active_model` to the newly trained checkpoint.
 
 Dashboard health charts:
 
