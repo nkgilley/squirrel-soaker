@@ -31,3 +31,13 @@ def test_still_roi_falls_back_to_legacy_setting():
         'camera_roi': '0.05,0.15,0.4,0.4',
     }
     assert trigger_server.roi_for_camera(settings, 1, kind='still') == '0.05,0.15,0.4,0.4'
+
+
+def test_capture_uses_day_camera_when_nighttime_mode_is_disabled(monkeypatch):
+    monkeypatch.setattr(capture, 'NIGHTTIME_MODE_ENABLED', False)
+    monkeypatch.setattr(capture, 'DAY_CAMERA_INDEX', 0)
+    monkeypatch.setattr(capture, 'NIGHT_CAMERA_INDEX', 1)
+    after_dark = capture.get_eastern_time().replace(hour=23, minute=0, second=0, microsecond=0)
+
+    assert capture.get_camera_period(after_dark) == 'day'
+    assert capture.get_active_camera_index(after_dark) == 0

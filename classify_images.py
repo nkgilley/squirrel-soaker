@@ -424,6 +424,7 @@ default_settings = {
     'analysis_interval': 5,
     'save_interval': 30,
     'daylight_mode': 'sun',
+    'nighttime_mode_enabled': True,
     'daylight_latitude': 38.9586,
     'daylight_longitude': -77.3570,
     'sunrise_offset_minutes': 0,
@@ -511,6 +512,7 @@ def load_settings():
                 merged = default_settings.copy()
                 merged.update(settings)
                 merged['enable_rtsp'] = setting_enabled(merged.get('enable_rtsp', True))
+                merged['nighttime_mode_enabled'] = setting_enabled(merged.get('nighttime_mode_enabled', True))
                 if 'analysis_interval' not in settings:
                     merged['analysis_interval'] = int(merged.get('capture_interval', default_settings['analysis_interval']))
                 if 'save_interval' not in settings:
@@ -532,6 +534,7 @@ def load_settings():
             print("Error loading settings:", e)
     settings = default_settings.copy()
     settings['enable_rtsp'] = setting_enabled(settings.get('enable_rtsp', True))
+    settings['nighttime_mode_enabled'] = setting_enabled(settings.get('nighttime_mode_enabled', True))
     return settings.copy()
 
 @with_settings_lock
@@ -3722,9 +3725,12 @@ HTML_TEMPLATE = """
                 if (grid) {
                     const daylight = health.daylight || {};
                     const irPlug = health.ir_camera_plug || {};
+                    const daylightLabel = daylight.nighttime_mode_enabled === false
+                        ? 'Night mode off'
+                        : (daylight.is_daylight === false ? `Sleeping until ${String(daylight.next_start || '').slice(11, 16)}` : 'Active');
                     grid.innerHTML = [
                         metricTile('Last Frame Age', fmtSeconds(health.latest_frame_age_seconds)),
-                        metricTile('Daylight', daylight.is_daylight === false ? `Sleeping until ${String(daylight.next_start || '').slice(11, 16)}` : 'Active'),
+                        metricTile('Daylight', daylightLabel),
                         metricTile('Pi Loop', fmtMs(pi.total_ms)),
                         metricTile('Capture', fmtMs(pi.capture_ms)),
                         metricTile('Upload', fmtMs(pi.upload_ms)),
@@ -4162,6 +4168,9 @@ HTML_TEMPLATE = """
                             <div class="settings-fields">
                                 ${settingsField('settings-analysis-interval', 'Analyze Every', 'number', 'min="5" max="300"', 'Seconds between Pi still captures.')}
                                 ${settingsField('settings-save-interval', 'Save For Review Every', 'number', 'min="5" max="3600"', 'Seconds between saved review images.')}
+                                <div class="settings-field settings-field-full">
+                                    ${settingsCheckbox('settings-nighttime-mode-enabled', 'Enable nighttime camera mode')}
+                                </div>
                                 ${settingsSelect('settings-daylight-mode', 'Nighttime Mode', [['sun', 'Sunrise/Sunset'], ['fixed', 'Fixed Hours']], 'Sunrise/sunset defaults to Reston, VA.')}
                                 ${settingsField('settings-daylight-latitude', 'Latitude', 'number', 'min="-90" max="90" step="0.0001"')}
                                 ${settingsField('settings-daylight-longitude', 'Longitude', 'number', 'min="-180" max="180" step="0.0001"')}
@@ -4557,6 +4566,7 @@ HTML_TEMPLATE = """
                     setSettingValue('settings-analysis-interval', loadedSettings.analysis_interval || loadedSettings.capture_interval || 5);
                     setSettingValue('settings-save-interval', loadedSettings.save_interval || 30);
                     setSettingValue('settings-daylight-mode', loadedSettings.daylight_mode || 'sun');
+                    setSettingChecked('settings-nighttime-mode-enabled', loadedSettings.nighttime_mode_enabled !== false);
                     setSettingValue('settings-daylight-latitude', loadedSettings.daylight_latitude ?? 38.9586);
                     setSettingValue('settings-daylight-longitude', loadedSettings.daylight_longitude ?? -77.3570);
                     setSettingValue('settings-sunrise-offset', loadedSettings.sunrise_offset_minutes ?? 0);
@@ -4661,6 +4671,7 @@ HTML_TEMPLATE = """
             const save_interval = parseInt(getSettingValue('settings-save-interval', loadedSettings.save_interval || 30));
             const capture_interval = analysis_interval;
             const daylight_mode = getSettingValue('settings-daylight-mode', loadedSettings.daylight_mode || 'sun');
+            const nighttime_mode_enabled = getSettingChecked('settings-nighttime-mode-enabled', loadedSettings.nighttime_mode_enabled !== false);
             const daylight_latitude = parseFloat(getSettingValue('settings-daylight-latitude', loadedSettings.daylight_latitude ?? 38.9586));
             const daylight_longitude = parseFloat(getSettingValue('settings-daylight-longitude', loadedSettings.daylight_longitude ?? -77.3570));
             const sunrise_offset_minutes = parseInt(getSettingValue('settings-sunrise-offset', loadedSettings.sunrise_offset_minutes ?? 0));
@@ -4741,6 +4752,7 @@ HTML_TEMPLATE = """
                         analysis_interval,
                         save_interval,
                         daylight_mode,
+                        nighttime_mode_enabled,
                         daylight_latitude,
                         daylight_longitude,
                         sunrise_offset_minutes,
@@ -7573,12 +7585,21 @@ def get_daylight_status(settings):
 
     return {
         'is_daylight': is_daylight_now,
+        'nighttime_mode_enabled': setting_enabled(settings.get('nighttime_mode_enabled', True)),
         'source': start_source,
         'now': now.strftime("%Y-%m-%d %H:%M:%S"),
         'start': start.strftime("%Y-%m-%d %H:%M:%S"),
         'end': end.strftime("%Y-%m-%d %H:%M:%S"),
         'next_start': next_start.strftime("%Y-%m-%d %H:%M:%S")
     }
+
+def get_effective_camera_period(settings, requested_period=None):
+    if not setting_enabled(settings.get('nighttime_mode_enabled', True)):
+        return 'day'
+    period = str(requested_period or '').strip().lower()
+    if period in ('day', 'night'):
+        return period
+    return 'day' if get_daylight_status(settings).get('is_daylight') else 'night'
 
 @app.route('/api/health')
 def api_health():
@@ -7603,7 +7624,7 @@ def api_health():
         'pending_spray': get_pending_spray_confirmation(),
         'active_model': active_model_name,
         'active_model_type': active_model_type,
-        'camera_period': 'day' if daylight['is_daylight'] else 'night',
+        'camera_period': get_effective_camera_period(settings),
         'day_model': settings.get('day_model'),
         'night_model': settings.get('night_model'),
         'latest_frame_age_seconds': frame_age,
@@ -7630,6 +7651,7 @@ def api_health():
             'motion_threshold': settings.get('motion_threshold'),
             'motion_force_interval': settings.get('motion_force_interval'),
             'daylight_mode': settings.get('daylight_mode'),
+            'nighttime_mode_enabled': settings.get('nighttime_mode_enabled'),
             'daylight_latitude': settings.get('daylight_latitude'),
             'daylight_longitude': settings.get('daylight_longitude'),
             'sunrise_offset_minutes': settings.get('sunrise_offset_minutes'),
@@ -7738,6 +7760,7 @@ def api_pi_action(action):
             if camera_period not in ('day', 'night'):
                 return jsonify({'status': 'error', 'message': 'camera_period must be day or night'}), 400
             settings = load_settings()
+            camera_period = get_effective_camera_period(settings, camera_period)
             camera_key = 'night_camera_index' if camera_period == 'night' else 'day_camera_index'
             separator = '&' if '?' in path else '?'
             path += '{0}camera={1}'.format(separator, int(settings.get(camera_key, 1 if camera_period == 'night' else 0)))
@@ -7984,8 +8007,7 @@ def process_camera_frame(img_data, save_requested=True, is_test=False, source='u
 
     settings = load_settings()
     camera_period = str(request.args.get('period') or request.args.get('camera_period') or '').strip().lower()
-    if camera_period not in ('day', 'night'):
-        camera_period = 'day' if get_daylight_status(settings).get('is_daylight') else 'night'
+    camera_period = get_effective_camera_period(settings, camera_period)
     sync_ir_camera_plug(settings, camera_period)
     quality = analyze_frame_quality(img_data)
     selected_model_name = resolve_model_for_period(settings, camera_period)
@@ -8290,10 +8312,9 @@ def trigger_spray_on_pi(duration):
     try:
         settings = load_settings()
         rotation = settings.get('video_rotation', settings.get('camera_rotation', 0))
-        daylight = get_daylight_status(settings)
-        is_daylight = daylight.get('is_daylight')
-        camera_index = settings.get('day_camera_index', 0) if is_daylight else settings.get('night_camera_index', 1)
-        roi = settings.get('day_video_roi', settings.get('video_roi', '')) if is_daylight else settings.get('night_video_roi', settings.get('video_roi', ''))
+        camera_period = get_effective_camera_period(settings)
+        camera_index = settings.get('day_camera_index', 0) if camera_period == 'day' else settings.get('night_camera_index', 1)
+        roi = settings.get('day_video_roi', settings.get('video_roi', '')) if camera_period == 'day' else settings.get('night_video_roi', settings.get('video_roi', ''))
         encoded_roi = urllib.parse.quote(roi) if roi else ''
         url = 'http://{}:8080/spray?duration={}&rotation={}&roi={}&camera={}'.format(PI_IP, duration, rotation, encoded_roi, camera_index)
         req = urllib.request.Request(url, headers=authenticated_device_headers(), method='POST')

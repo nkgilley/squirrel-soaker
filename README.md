@@ -246,6 +246,10 @@ The defaults expect the day camera at index `0` and NoIR camera at index `1`.
 Change **Day Camera Index** and **Night Camera Index** in Settings if the order
 is reversed.
 
+If you are only running a single normal camera, turn off **Enable nighttime
+camera mode** in Settings. The Pi will keep using the day camera, day ROI, day
+video ROI, and day model after sunset instead of switching to the NoIR camera.
+
 ### Configure Host IP
 
 The Pi scripts need the Mac/Docker host IP:

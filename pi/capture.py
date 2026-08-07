@@ -20,6 +20,7 @@ SAVE_INTERVAL_SECONDS = 30
 START_HOUR = 6
 END_HOUR = 20
 DAYLIGHT_MODE = "sun"
+NIGHTTIME_MODE_ENABLED = True
 DAYLIGHT_LATITUDE = 38.9586
 DAYLIGHT_LONGITUDE = -77.3570
 SUNRISE_OFFSET_MINUTES = 0
@@ -196,6 +197,8 @@ def is_daylight(dt):
     return start <= dt < end
 
 def get_camera_period(dt):
+    if not NIGHTTIME_MODE_ENABLED:
+        return "day"
     return "day" if is_daylight(dt) else "night"
 
 def get_active_camera_index(dt=None):
@@ -218,7 +221,7 @@ def fetch_config_from_mac():
     global CAMERA_TUNING_ENABLED, DAY_CAMERA_INDEX, NIGHT_CAMERA_INDEX
     global CAMERA_SENSOR_MODE, CAMERA_FOCUS_MODE, CAMERA_LENS_POSITION, CAMERA_AUTOFOCUS_WINDOW
     global MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS
-    global START_HOUR, END_HOUR, DAYLIGHT_MODE, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
+    global START_HOUR, END_HOUR, DAYLIGHT_MODE, NIGHTTIME_MODE_ENABLED, DAYLIGHT_LATITUDE, DAYLIGHT_LONGITUDE
     global SUNRISE_OFFSET_MINUTES, SUNSET_OFFSET_MINUTES
     import urllib.request
 
@@ -306,6 +309,12 @@ def fetch_config_from_mac():
                 if 'daylight_mode' in settings:
                     mode = str(settings['daylight_mode']).strip().lower()
                     DAYLIGHT_MODE = mode if mode in ("sun", "fixed") else "sun"
+                if 'nighttime_mode_enabled' in settings:
+                    value = settings['nighttime_mode_enabled']
+                    if isinstance(value, str):
+                        NIGHTTIME_MODE_ENABLED = value.strip().lower() in ('1', 'true', 'yes', 'on')
+                    else:
+                        NIGHTTIME_MODE_ENABLED = bool(value)
                 if 'daylight_latitude' in settings:
                     DAYLIGHT_LATITUDE = float(settings['daylight_latitude'])
                 if 'daylight_longitude' in settings:
@@ -319,7 +328,7 @@ def fetch_config_from_mac():
                 if 'sunset_offset_minutes' in settings:
                     SUNSET_OFFSET_MINUTES = int(settings['sunset_offset_minutes'])
                 daylight_start, daylight_end, daylight_source = get_daylight_window(get_eastern_time())
-                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROIs day={14} night={15}, VideoRotation={16}, VideoROIs day={17} night={18}, Threshold={19:.2f}, Cameras day={20} night={21}, Daylight={22} {23}-{24}".format(
+                print("[Config] Dynamic settings updated: AnalysisInterval={0}s, SaveInterval={1}s, AnalysisSize={2}x{3} q{4}, ReviewSize={5}x{6} q{7}, Focus={8} lens={9}, Motion={10} threshold={11:.1f} force={12}s, Rotation={13}, ROIs day={14} night={15}, VideoRotation={16}, VideoROIs day={17} night={18}, Threshold={19:.2f}, Cameras day={20} night={21}, NightMode={22}, Daylight={23} {24}-{25}".format(
                     ANALYSIS_INTERVAL_SECONDS, SAVE_INTERVAL_SECONDS,
                     ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_JPEG_QUALITY,
                     REVIEW_WIDTH, REVIEW_HEIGHT, REVIEW_JPEG_QUALITY,
@@ -327,6 +336,7 @@ def fetch_config_from_mac():
                     MOTION_PREFILTER_ENABLED, MOTION_THRESHOLD, MOTION_FORCE_INTERVAL_SECONDS,
                     ROTATION, DAY_ROI, NIGHT_ROI, VIDEO_ROTATION, DAY_VIDEO_ROI, NIGHT_VIDEO_ROI, CONFIDENCE_THRESHOLD,
                     DAY_CAMERA_INDEX, NIGHT_CAMERA_INDEX,
+                    NIGHTTIME_MODE_ENABLED,
                     daylight_source,
                     daylight_start.strftime("%H:%M"),
                     daylight_end.strftime("%H:%M")

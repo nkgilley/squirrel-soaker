@@ -7,6 +7,7 @@ DEFAULTS = {
     'analysis_interval': 5,
     'spray_duration': 3.0,
     'motion_prefilter_enabled': True,
+    'nighttime_mode_enabled': True,
     'spray_mode': 'auto',
     'camera_roi': '',
     'day_camera_roi': '',
@@ -27,6 +28,7 @@ def test_settings_are_typed_and_validated():
             'analysis_interval': '10',
             'spray_duration': '4.5',
             'motion_prefilter_enabled': 'false',
+            'nighttime_mode_enabled': 'false',
             'spray_mode': 'confirm',
         },
         DEFAULTS,
@@ -37,6 +39,7 @@ def test_settings_are_typed_and_validated():
         'analysis_interval': 10,
         'spray_duration': 4.5,
         'motion_prefilter_enabled': False,
+        'nighttime_mode_enabled': False,
         'spray_mode': 'confirm',
     }
 
